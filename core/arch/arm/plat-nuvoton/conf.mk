@@ -43,14 +43,14 @@ CFG_WARN_INSECURE = n
 ifeq ($(PLATFORM_FLAVOR),npcm845x)
 CFG_TEE_CORE_NB_CORE = 4
 # [3000.0000 031f.ffff] is reserved to early boot
-CFG_TZDRAM_START ?= 0x00100000
-CFG_TZDRAM_SIZE  ?= 0x00f00000
+CFG_TZDRAM_START ?= 0x02100000
+CFG_TZDRAM_SIZE  ?= 0x03f00000
 # SHM chosen arbitrary, in a way that it does not interfere
 # with initial location of linux kernel, dtb and initrd.
-CFG_SHMEM_START ?= 0x2FD00000 #0x42000000   # Hila to check 
+CFG_SHMEM_START ?= 0x06000000
 CFG_SHMEM_SIZE  ?= 0x00200000
 # When Secure Data Path is enable, last MByte of TZDRAM is SDP test memory.
-CFG_TEE_SDP_MEM_SIZE ?= 0x00400000
+CFG_TEE_SDP_MEM_SIZE ?= 0x05F00000
 $(call force,CFG_DT,y)
 CFG_DTB_MAX_SIZE ?= 0x100000
 endif
