@@ -13,6 +13,12 @@ $(call force,CFG_ARM_GICV2,y)
 $(call force,CFG_SECURE_TIME_SOURCE_CNTPCT,y)
 $(call force,CFG_16550_UART,y)
 
+# Not used now for current platform
+$(call force,CFG_EXTERNAL_DT,n)
+
+# Validation of all images is made by BootBlock
+$(call force,CFG_WARN_INSECURE,n)
+
 CFG_WITH_STATS ?= y
 
 # To enable version printing with color in main
