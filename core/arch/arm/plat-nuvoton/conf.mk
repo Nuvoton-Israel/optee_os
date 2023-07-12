@@ -16,7 +16,7 @@ $(call force,CFG_16550_UART,y)
 # Not used now for current platform
 $(call force,CFG_EXTERNAL_DT,n)
 
-# Validation of all images is made by BootBlock
+# Disable warning for current platform
 $(call force,CFG_WARN_INSECURE,n)
 
 CFG_WITH_STATS ?= y
