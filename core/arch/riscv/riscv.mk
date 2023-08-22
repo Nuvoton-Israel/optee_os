@@ -71,9 +71,19 @@ core-platform-cppflags	+= -I$(arch-dir)/include
 core-platform-subdirs += \
 	$(addprefix $(arch-dir)/, kernel mm tee) $(platform-dir)
 
-# more convenient to move it to platform instead
-rv64-platform-cppflags += -mcmodel=medany -march=rv64imafd -mabi=lp64d
-rv64-platform-cppflags += -Wno-missing-include-dirs
+# Default values for "-mcmodel", "-march", and "-abi" compiler flags.
+# Platform-specific overrides are in core/arch/riscv/plat-*/conf.mk.
+riscv-platform-mcmodel ?= medany
+rv64-platform-isa ?= rv64imafd
+rv64-platform-abi ?= lp64d
+rv32-platform-isa ?= rv32imafd
+rv32-platform-abi ?= ilp32d
+
+rv64-platform-cflags += -mcmodel=$(riscv-platform-mcmodel)
+rv64-platform-cflags += -march=$(rv64-platform-isa) -mabi=$(rv64-platform-abi)
+rv64-platform-cflags += -Wno-missing-include-dirs
+rv32-platform-cflags += -mcmodel=$(riscv-platform-mcmodel)
+rv32-platform-cflags += -march=$(rv32-platform-isa) -mabi=$(rv32-platform-abi)
 
 rv64-platform-cppflags += -DRV64=1 -D__LP64__=1
 rv32-platform-cppflags += -DRV32=1 -D__ILP32__=1
@@ -102,6 +112,11 @@ core-platform-aflags += $(platform-aflags-debug-info)
 
 ifeq ($(CFG_CORE_ASLR),y)
 core-platform-cflags += -fpie
+endif
+
+ifeq ($(CFG_UNWIND),y)
+core-platform-cppflags += -fno-omit-frame-pointer
+core-platform-cflags += -fno-omit-frame-pointer
 endif
 
 ifeq ($(CFG_RV64_core),y)
@@ -146,6 +161,7 @@ ta_rv32-platform-cflags += $(platform-cflags-debug-info)
 ta_rv32-platform-cflags += -fpic
 
 ifeq ($(CFG_UNWIND),y)
+ta_rv32-platform-cflags += -fno-omit-frame-pointer
 ta_rv32-platform-cflags += -funwind-tables
 endif
 ta_rv32-platform-aflags += $(platform-aflags-generic)
@@ -181,6 +197,9 @@ ta_rv64-platform-cflags += $(platform-cflags-optimization)
 ta_rv64-platform-cflags += $(platform-cflags-debug-info)
 ta_rv64-platform-cflags += -fpic
 ta_rv64-platform-cflags += $(rv64-platform-cflags-generic)
+ifeq ($(CFG_UNWIND),y)
+ta_rv64-platform-cflags += -fno-omit-frame-pointer
+endif
 ifeq ($(rv64-platform-hard-float-enabled),y)
 ta_rv64-platform-cflags += $(rv64-platform-cflags-hard-float)
 else

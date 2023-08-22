@@ -4,12 +4,19 @@
  */
 
 #include <assert.h>
+#include <compiler.h>
 #include <config.h>
 #include <drivers/hfic.h>
 #include <hafnium.h>
 #include <kernel/interrupt.h>
 #include <kernel/panic.h>
 #include <kernel/thread.h>
+
+struct hfic_data {
+	struct itr_chip chip;
+};
+
+static struct hfic_data hfic_data __nex_bss;
 
 static void hfic_op_add(struct itr_chip *chip __unused, size_t it __unused,
 			uint32_t type __unused, uint32_t prio __unused)
@@ -53,6 +60,8 @@ static void hfic_op_set_affinity(struct itr_chip *chip __unused,
 
 static const struct itr_ops hfic_ops = {
 	.add = hfic_op_add,
+	.mask = hfic_op_disable,
+	.unmask = hfic_op_enable,
 	.enable = hfic_op_enable,
 	.disable = hfic_op_disable,
 	.raise_pi = hfic_op_raise_pi,
@@ -60,12 +69,14 @@ static const struct itr_ops hfic_ops = {
 	.set_affinity = hfic_op_set_affinity,
 };
 
-void hfic_init(struct hfic_data *hd)
+void hfic_init(void)
 {
-	hd->chip.ops = &hfic_ops;
+	hfic_data.chip.ops = &hfic_ops;
+	interrupt_main_init(&hfic_data.chip);
 }
 
-void hfic_it_handle(struct hfic_data *hd __unused)
+/* Override interrupt_main_handler() with driver implementation */
+void interrupt_main_handler(void)
 {
 	uint32_t id = 0;
 	uint32_t res __maybe_unused = 0;

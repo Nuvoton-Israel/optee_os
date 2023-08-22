@@ -5,7 +5,6 @@ srcs-y += assert.c
 srcs-y += console.c
 srcs-$(CFG_DT) += dt.c
 srcs-$(CFG_DT) += dt_driver.c
-srcs-$(CFG_DT_DRIVER_EMBEDDED_TEST) += dt_driver_test.c
 srcs-y += pm.c
 srcs-y += handle.c
 srcs-y += interrupt.c
@@ -41,10 +40,6 @@ srcs-$(CFG_LOCKDEP) += mutex_lockdep.c
 srcs-y += wait_queue.c
 srcs-y += notif.c
 srcs-y += thread.c
-
-ifeq ($(CFG_CORE_TPM_EVENT_LOG),y)
-srcs-$(CFG_CORE_TCG_PROVIDER) += tcg.c
-endif
 
 ifeq ($(CFG_WITH_USER_TA),y)
 srcs-y += user_ta.c

@@ -81,7 +81,9 @@ jobs:
 
           function _make() { make -j$(nproc) -s O=out $*; }
           function download_plug_and_trust() { mkdir -p $HOME/se050 && git clone --single-branch -b v0.4.2 https://github.com/foundriesio/plug-and-trust $HOME/se050/plug-and-trust || (rm -rf $HOME/se050 ; echo Nervermind); }
-          function download_scp_firmware() { git clone --single-branch https://github.com/ARM-software/SCP-firmware.git $HOME/scp-firmware || echo Nervermind; }
+
+          #Temporarily disabled
+          function download_scp_firmware() { echo "download_scp_firmware skipped"; }
 
           ccache -s -v
           download_plug_and_trust
@@ -117,7 +119,7 @@ jobs:
           _make CFG_SECURE_DATA_PATH=y
           _make CFG_REE_FS_TA_BUFFERED=y
           _make CFG_WITH_USER_TA=n
-          _make CFG_{ATTESTATION,DEVICE_ENUM,RTC,SCMI,SECSTOR_TA_MGT}_PTA=y
+          _make CFG_{ATTESTATION,DEVICE_ENUM,RTC,SCMI,SECSTOR_TA_MGT}_PTA=y CFG_WITH_STATS=y CFG_TA_STATS=y
           _make PLATFORM=vexpress-qemu_armv8a
           _make PLATFORM=vexpress-qemu_armv8a COMPILER=clang
           _make PLATFORM=vexpress-qemu_armv8a CFG_TEE_CORE_LOG_LEVEL=0 CFG_TEE_CORE_DEBUG=n CFG_TEE_TA_LOG_LEVEL=0 CFG_DEBUG_INFO=n
@@ -128,7 +130,9 @@ jobs:
           _make PLATFORM=vexpress-qemu_armv8a CFG_NS_VIRTUALIZATION=y
           _make PLATFORM=vexpress-qemu_armv8a CFG_CORE_PREALLOC_EL0_TBLS=y
           _make PLATFORM=vexpress-qemu_armv8a CFG_CORE_SEL1_SPMC=y
-          _make PLATFORM=vexpress-qemu_armv8a CFG_{ATTESTATION,DEVICE_ENUM,RTC,SCMI,SECSTOR_TA_MGT}_PTA=y
+          _make PLATFORM=vexpress-qemu_armv8a CFG_CORE_SEL2_SPMC=y CFG_CORE_PHYS_RELOCATABLE=y CFG_TZDRAM_START=0x0d304000 CFG_TZDRAM_SIZE=0x00cfc000
+          _make PLATFORM=vexpress-qemu_armv8a CFG_{ATTESTATION,DEVICE_ENUM,RTC,SCMI,SECSTOR_TA_MGT}_PTA=y CFG_WITH_STATS=y CFG_TA_STATS=y
+          _make PLATFORM=vexpress-qemu_armv8a CFG_CORE_SEL1_SPMC=y CFG_NS_VIRTUALIZATION=y
           dd if=/dev/urandom of=BL32_AP_MM.fd bs=2621440 count=1 && _make PLATFORM=vexpress-qemu_armv8a CFG_STMM_PATH=BL32_AP_MM.fd CFG_RPMB_FS=y CFG_CORE_HEAP_SIZE=524288 CFG_TEE_RAM_VA_SIZE=0x00400000
           if [ -d $HOME/scp-firmware ]; then _make PLATFORM=vexpress-qemu_armv8a CFG_SCMI_SCPFW=y CFG_SCP_FIRMWARE=$HOME/scp-firmware; fi
           _make PLATFORM=stm-b2260
@@ -247,6 +251,7 @@ jobs:
           _make PLATFORM=rzn1
           _make PLATFORM=versal CFG_VERSAL_FPGA_DDR_ADDR=0x40000000
           _make PLATFORM=corstone1000
+          _make PLATFORM=nuvoton
 
   QEMUv8_check:
     name: make check (QEMUv8)
@@ -269,6 +274,8 @@ jobs:
           export LC_ALL=C
           export BR2_CCACHE_DIR=/github/home/.cache/ccache
           export CFG_TEE_CORE_LOG_LEVEL=0
+          export CFG_ATTESTATION_PTA=y
+          export CFG_ATTESTATION_PTA_KEY_SIZE=1024
           WD=$(pwd)
           cd ..
           TOP=$(pwd)/optee_repo_qemu_v8
@@ -278,8 +285,9 @@ jobs:
           cd ${TOP}/build
 
           make -j$(nproc) check
-
           make -j$(nproc) check CFG_CRYPTO_WITH_CE82=y
+          make -j$(nproc) check CFG_FTRACE_SUPPORT=y CFG_SYSCALL_FTRACE=y XTEST_ARGS=regression_1001
+          make -j$(nproc) check CFG_PAN=y
 
   QEMUv8_Xen_check:
     name: make check (QEMUv8, Xen)

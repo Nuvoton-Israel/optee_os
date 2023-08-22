@@ -40,7 +40,6 @@ struct boot_embdata {
 	uint32_t reloc_len;
 };
 
-extern uint8_t embedded_secure_dtb[];
 extern const struct core_mmu_config boot_mmu_config;
 
 /* @nsec_entry is unused if using CFG_WITH_ARM_TRUSTED_FW */
@@ -48,6 +47,7 @@ void boot_init_primary_early(unsigned long pageable_part,
 			     unsigned long nsec_entry);
 void boot_init_primary_late(unsigned long fdt, unsigned long tos_fw_config);
 void boot_init_memtag(void);
+void boot_save_boot_info(void *boot_info);
 
 void __panic_at_smc_return(void) __noreturn;
 
@@ -58,8 +58,8 @@ unsigned long boot_cpu_on_handler(unsigned long a0, unsigned long a1);
 void boot_init_secondary(unsigned long nsec_entry);
 #endif
 
-void main_init_gic(void);
-void main_secondary_init_gic(void);
+void boot_primary_init_intc(void);
+void boot_secondary_init_intc(void);
 
 void init_sec_mon(unsigned long nsec_entry);
 void init_tee_runtime(void);
@@ -69,8 +69,16 @@ void plat_cpu_reset_early(void);
 void plat_primary_init_early(void);
 unsigned long plat_get_aslr_seed(void);
 unsigned long plat_get_freq(void);
-#if defined(_CFG_CORE_STACK_PROTECTOR)
-uintptr_t plat_get_random_stack_canary(void);
+#if defined(_CFG_CORE_STACK_PROTECTOR) || defined(CFG_WITH_STACK_CANARIES)
+/*
+ * plat_get_random_stack_canaries() - Get random values for stack canaries.
+ * @buf:	Pointer to the buffer where to store canaries
+ * @ncan:	The number of canaries to generate.
+ * @size:	The size (in bytes) of each canary.
+ *
+ * This function has a __weak default implementation.
+ */
+void plat_get_random_stack_canaries(void *buf, size_t ncan, size_t size);
 #endif
 void arm_cl2_config(vaddr_t pl310);
 void arm_cl2_enable(vaddr_t pl310);
@@ -83,26 +91,6 @@ int boot_core_release(size_t core_idx, paddr_t entry);
 struct ns_entry_context *boot_core_hpen(void);
 #endif
 
-/* Returns embedded DTB if present, then external DTB if found, then NULL */
-void *get_dt(void);
-
-/*
- * get_secure_dt() - returns secure DTB for drivers
- *
- * Returns device tree that is considered secure for drivers to use.
- *
- * 1. Returns embedded DTB if available,
- * 2. Secure external DTB if available,
- * 3. If neither then NULL
- */
-void *get_secure_dt(void);
-
-/* Returns embedded DTB location if present, otherwise NULL */
-void *get_embedded_dt(void);
-
-/* Returns external DTB if present, otherwise NULL */
-void *get_external_dt(void);
-
 /* Returns TOS_FW_CONFIG DTB if present, otherwise NULL */
 void *get_tos_fw_config_dt(void);
 
@@ -113,11 +101,5 @@ void *get_tos_fw_config_dt(void);
  * This function has a __weak default implementation.
  */
 unsigned long get_aslr_seed(void *fdt);
-
-/* Returns true if passed DTB is same as Embedded DTB, otherwise false */
-static inline bool is_embedded_dt(void *fdt)
-{
-	return fdt && fdt == get_embedded_dt();
-}
 
 #endif /* __KERNEL_BOOT_H */

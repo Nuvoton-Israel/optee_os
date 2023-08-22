@@ -103,12 +103,6 @@ CFG_CORE_DUMP_OOM ?= $(CFG_TEE_CORE_MALLOC_DEBUG)
 # Levels: 0=none 1=error 2=info 3=debug 4=flow
 CFG_MSG_LONG_PREFIX_MASK ?= 0x1a
 
-# PRNG configuration
-# If CFG_WITH_SOFTWARE_PRNG is enabled, crypto provider provided
-# software PRNG implementation is used.
-# Otherwise, you need to implement hw_get_random_bytes() for your platform
-CFG_WITH_SOFTWARE_PRNG ?= y
-
 # Number of threads
 CFG_NUM_THREADS ?= 2
 
@@ -127,7 +121,7 @@ CFG_OS_REV_REPORTS_GIT_SHA1 ?= y
 # with limited depth not including any tag, so there is really no guarantee
 # that TEE_IMPL_VERSION contains the major and minor revision numbers.
 CFG_OPTEE_REVISION_MAJOR ?= 3
-CFG_OPTEE_REVISION_MINOR ?= 21
+CFG_OPTEE_REVISION_MINOR ?= 22
 CFG_OPTEE_REVISION_EXTRA ?=
 
 # Trusted OS implementation version
@@ -531,13 +525,14 @@ CFG_TEE_CORE_EMBED_INTERNAL_TESTS ?= $(CFG_ENABLE_EMBEDDED_TESTS)
 # Compiles bget_main_test() to be called from a test TA
 CFG_TA_BGET_TEST ?= $(CFG_ENABLE_EMBEDDED_TESTS)
 
-# CFG_DT_DRIVER_EMBEDDED_TEST when enabled embedb DT driver probing tests.
-# This also requires embeddeding a DTB with expected content.
-# Defautl disable CFG_DRIVERS_CLK_EARLY_PROBE to probe clocks as other drivers.
+# CFG_DT_DRIVER_EMBEDDED_TEST when enabled embedded DT driver probing tests.
+# This also requires embedding a DTB with expected content.
+# Default disable CFG_DRIVERS_CLK_EARLY_PROBE to probe clocks as other drivers.
 # A probe deferral test mandates CFG_DRIVERS_DT_RECURSIVE_PROBE=n.
 CFG_DT_DRIVER_EMBEDDED_TEST ?= n
 ifeq ($(CFG_DT_DRIVER_EMBEDDED_TEST),y)
 CFG_DRIVERS_CLK ?= y
+CFG_DRIVERS_GPIO ?= y
 CFG_DRIVERS_RSTCTRL ?= y
 CFG_DRIVERS_CLK_EARLY_PROBE ?= n
 $(call force,CFG_DRIVERS_DT_RECURSIVE_PROBE,n,Mandated by CFG_DT_DRIVER_EMBEDDED_TEST)
@@ -575,25 +570,9 @@ CFG_TA_GPROF_SUPPORT ?= n
 # TA function tracing.
 # When this option is enabled, OP-TEE can execute Trusted Applications
 # instrumented with GCC's -pg flag and will output function tracing
-# information in ftrace.out format to /tmp/ftrace-<ta_uuid>.out (path is
-# defined in tee-supplicant)
+# information for all functions compiled with -pg to
+# /tmp/ftrace-<ta_uuid>.out (path is defined in tee-supplicant).
 CFG_FTRACE_SUPPORT ?= n
-
-# How to make room when the function tracing buffer is full?
-# 'shift': shift the previously stored data by the amount needed in order
-#    to always keep the latest logs (slower, especially with big buffer sizes)
-# 'wrap': discard the previous data and start at the beginning of the buffer
-#    again (fast, but can result in a mostly empty buffer)
-# 'stop': stop logging new data
-CFG_FTRACE_BUF_WHEN_FULL ?= shift
-$(call cfg-check-value,FTRACE_BUF_WHEN_FULL,shift stop wrap)
-$(call force,_CFG_FTRACE_BUF_WHEN_FULL_$(CFG_FTRACE_BUF_WHEN_FULL),y)
-
-# Function tracing: unit to be used when displaying durations
-#  0: always display durations in microseconds
-# >0: if duration is greater or equal to the specified value (in microseconds),
-#     display it in milliseconds
-CFG_FTRACE_US_MS ?= 10000
 
 # Core syscall function tracing.
 # When this option is enabled, OP-TEE core is instrumented with GCC's
@@ -814,6 +793,12 @@ ifeq ($(CFG_SCMI_MSG_DRIVERS)-$(CFG_SCMI_SCPFW),y-y)
 $(error CFG_SCMI_MSG_DRIVERS=y and CFG_SCMI_SCPFW=y are mutually exclusive)
 endif
 
+# When enabled, CFG_SCMI_MSG_USE_CLK embeds SCMI clocks registering services for
+# the platform SCMI server and implements the platform plat_scmi_clock_*()
+# functions.
+CFG_SCMI_MSG_USE_CLK ?= n
+$(eval $(call cfg-depends-all,CFG_SCMI_MSG_USE_CLK,CFG_DRIVERS_CLK CFG_SCMI_MSG_DRIVERS))
+
 # Enable SCMI PTA interface for REE SCMI agents
 CFG_SCMI_PTA ?= n
 ifeq ($(CFG_SCMI_PTA),y)
@@ -881,8 +866,17 @@ $(eval $(call cfg-depends-all,CFG_DRIVERS_CLK_FIXED,CFG_DRIVERS_CLK_DT))
 # OP-TEE core to provide reset controls on subsystems of the devices.
 CFG_DRIVERS_RSTCTRL ?= n
 
+# When enabled, CFG_DRIVERS_GPIO embeds a GPIO controller framework in
+# OP-TEE core to provide GPIO support for drivers.
+CFG_DRIVERS_GPIO ?= n
+
 # When enabled, CFG_DRIVERS_I2C provides I2C controller and devices support.
 CFG_DRIVERS_I2C ?= n
+
+# When enabled, CFG_DRIVERS_PINCTRL embeds a pin muxing controller framework in
+# OP-TEE core to provide drivers a way to apply pin muxing configurations based
+# on device-tree.
+CFG_DRIVERS_PINCTRL ?= n
 
 # The purpose of this flag is to show a print when booting up the device that
 # indicates whether the board runs a standard developer configuration or not.
@@ -933,7 +927,13 @@ ifeq (y-y,$(CFG_WITH_PAGER)-$(CFG_MEMTAG))
 $(error CFG_WITH_PAGER and CFG_MEMTAG are not compatible)
 endif
 
-# CFG_CORE_ASYNC_NOTIF is defined by the platform to enable enables support
+# Privileged Access Never (PAN, part of the ARMv8.1 Extensions) can be
+# used to restrict accesses to unprivileged memory from privileged mode.
+CFG_PAN ?= n
+
+$(eval $(call cfg-depends-all,CFG_PAN,CFG_ARM64_core))
+
+# CFG_CORE_ASYNC_NOTIF is defined by the platform to enable support
 # for sending asynchronous notifications to normal world. Note that an
 # interrupt ID must be configurged by the platform too. Currently is only
 # CFG_CORE_ASYNC_NOTIF_GIC_INTID defined.
@@ -998,13 +998,6 @@ CFG_DRIVERS_RTC ?= n
 
 # Enable PTA for RTC access from non-secure world
 CFG_RTC_PTA ?= n
-
-# Enable TPM2
-CFG_DRIVERS_TPM2 ?= n
-CFG_DRIVERS_TPM2_MMIO ?= n
-ifeq ($(CFG_CORE_TPM_EVENT_LOG),y)
-CFG_CORE_TCG_PROVIDER ?= $(CFG_DRIVERS_TPM2)
-endif
 
 # Enable the FF-A SPMC tests in xtests
 CFG_SPMC_TESTS ?= n

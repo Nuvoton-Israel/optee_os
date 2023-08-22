@@ -20,7 +20,6 @@
 
 #include "synquacer_rng_pta.h"
 
-static struct gic_data gic_data;
 static struct pl011_data console_data;
 
 register_phys_mem_pgdir(MEM_AREA_IO_NSEC, CONSOLE_UART_BASE,
@@ -29,11 +28,6 @@ register_phys_mem_pgdir(MEM_AREA_IO_SEC, GIC_BASE, CORE_MMU_PGDIR_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, THERMAL_SENSOR_BASE,
 			CORE_MMU_PGDIR_SIZE);
 
-void itr_core_handler(void)
-{
-	gic_it_handle(&gic_data);
-}
-
 void console_init(void)
 {
 	pl011_init(&console_data, CONSOLE_UART_BASE, CONSOLE_UART_CLK_IN_HZ,
@@ -41,12 +35,9 @@ void console_init(void)
 	register_serial_console(&console_data.chip);
 }
 
-void main_init_gic(void)
+void boot_primary_init_intc(void)
 {
-	/* On ARMv8-A, GIC configuration is initialized in TF-A */
-	gic_init_base_addr(&gic_data, 0, GIC_BASE + GICD_OFFSET);
-
-	itr_init(&gic_data.chip);
+	gic_init(0, GIC_BASE + GICD_OFFSET);
 }
 
 static enum itr_return timer_itr_cb(struct itr_handler *h __unused)

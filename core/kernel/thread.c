@@ -8,6 +8,7 @@
 #include <config.h>
 #include <crypto/crypto.h>
 #include <kernel/asan.h>
+#include <kernel/boot.h>
 #include <kernel/lockdep.h>
 #include <kernel/misc.h>
 #include <kernel/panic.h>
@@ -31,8 +32,8 @@ struct thread_core_local thread_core_local[CFG_TEE_CORE_NB_CORE] __nex_bss;
  */
 
 #ifdef CFG_WITH_STACK_CANARIES
-#define START_CANARY_VALUE	0xdededede
-#define END_CANARY_VALUE	0xabababab
+static uint32_t start_canary_value = 0xdedede00;
+static uint32_t end_canary_value = 0xababab00;
 #define GET_START_CANARY(name, stack_num) name[stack_num][0]
 #define GET_END_CANARY(name, stack_num) \
 	name[stack_num][sizeof(name[stack_num]) / sizeof(uint32_t) - 1]
@@ -81,8 +82,8 @@ void thread_init_canaries(void)
 		uint32_t *start_canary = &GET_START_CANARY(name, n);	\
 		uint32_t *end_canary = &GET_END_CANARY(name, n);	\
 									\
-		*start_canary = START_CANARY_VALUE;			\
-		*end_canary = END_CANARY_VALUE;				\
+		*start_canary = start_canary_value;			\
+		*end_canary = end_canary_value;				\
 	}
 
 	INIT_CANARY(stack_tmp);
@@ -92,6 +93,27 @@ void thread_init_canaries(void)
 #endif
 #endif/*CFG_WITH_STACK_CANARIES*/
 }
+
+#if defined(CFG_WITH_STACK_CANARIES)
+void thread_update_canaries(void)
+{
+	uint32_t canary[2] = { };
+	uint32_t exceptions = 0;
+
+	plat_get_random_stack_canaries(canary, ARRAY_SIZE(canary),
+				       sizeof(canary[0]));
+
+	exceptions = thread_mask_exceptions(THREAD_EXCP_ALL);
+
+	thread_check_canaries();
+
+	start_canary_value = canary[0];
+	end_canary_value = canary[1];
+	thread_init_canaries();
+
+	thread_unmask_exceptions(exceptions);
+}
+#endif
 
 #define CANARY_DIED(stack, loc, n, addr) \
 	do { \
@@ -108,28 +130,28 @@ void thread_check_canaries(void)
 
 	for (n = 0; n < ARRAY_SIZE(stack_tmp); n++) {
 		canary = &GET_START_CANARY(stack_tmp, n);
-		if (*canary != START_CANARY_VALUE)
+		if (*canary != start_canary_value)
 			CANARY_DIED(stack_tmp, start, n, canary);
 		canary = &GET_END_CANARY(stack_tmp, n);
-		if (*canary != END_CANARY_VALUE)
+		if (*canary != end_canary_value)
 			CANARY_DIED(stack_tmp, end, n, canary);
 	}
 
 	for (n = 0; n < ARRAY_SIZE(stack_abt); n++) {
 		canary = &GET_START_CANARY(stack_abt, n);
-		if (*canary != START_CANARY_VALUE)
+		if (*canary != start_canary_value)
 			CANARY_DIED(stack_abt, start, n, canary);
 		canary = &GET_END_CANARY(stack_abt, n);
-		if (*canary != END_CANARY_VALUE)
+		if (*canary != end_canary_value)
 			CANARY_DIED(stack_abt, end, n, canary);
 	}
 #if !defined(CFG_WITH_PAGER) && !defined(CFG_NS_VIRTUALIZATION)
 	for (n = 0; n < ARRAY_SIZE(stack_thread); n++) {
 		canary = &GET_START_CANARY(stack_thread, n);
-		if (*canary != START_CANARY_VALUE)
+		if (*canary != start_canary_value)
 			CANARY_DIED(stack_thread, start, n, canary);
 		canary = &GET_END_CANARY(stack_thread, n);
-		if (*canary != END_CANARY_VALUE)
+		if (*canary != end_canary_value)
 			CANARY_DIED(stack_thread, end, n, canary);
 	}
 #endif
@@ -366,7 +388,7 @@ bool __weak thread_is_in_normal_mode(void)
 	return ret;
 }
 
-short int thread_get_id_may_fail(void)
+short int __noprof thread_get_id_may_fail(void)
 {
 	/*
 	 * thread_get_core_local() requires foreign interrupts to be disabled
@@ -379,7 +401,7 @@ short int thread_get_id_may_fail(void)
 	return ct;
 }
 
-short int thread_get_id(void)
+short int __noprof thread_get_id(void)
 {
 	short int ct = thread_get_id_may_fail();
 
@@ -466,7 +488,7 @@ void __nostackcheck thread_init_thread_core_local(void)
 	tcl[0].tmp_stack_va_end = GET_STACK_BOTTOM(stack_tmp, 0);
 }
 
-void thread_init_core_local_stacks(void)
+void __nostackcheck thread_init_core_local_stacks(void)
 {
 	size_t n = 0;
 	struct thread_core_local *tcl = thread_core_local;
@@ -499,7 +521,7 @@ void thread_init_core_local_pauth_keys(void)
 }
 #endif
 
-struct thread_specific_data *thread_get_tsd(void)
+struct thread_specific_data * __noprof thread_get_tsd(void)
 {
 	return &threads[thread_get_id()].tsd;
 }

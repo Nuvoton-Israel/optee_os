@@ -18,19 +18,6 @@
 
 TAILQ_HEAD(sp_sessions_head, sp_session);
 
-struct sp_name_value_pair {
-	uint32_t name[4];
-	uint64_t value;
-	uint64_t size;
-};
-
-/* SP entry arguments passed to SP image: see ABI in FF-A specification */
-struct sp_ffa_init_info {
-	uint32_t magic; /* FF-A */
-	uint32_t count; /* Count of name value size pairs */
-	struct sp_name_value_pair nvp[]; /* Array of name value size pairs */
-};
-
 enum sp_status { sp_idle, sp_busy, sp_preempted, sp_dead };
 
 struct sp_session {
@@ -39,11 +26,12 @@ struct sp_session {
 	uint16_t endpoint_id;
 	uint16_t caller_id;
 	struct ts_session ts_sess;
-	struct sp_ffa_init_info *info;
 	unsigned int spinlock;
 	const void *fdt;
 	bool is_initialized;
 	TEE_UUID ffa_uuid;
+	uint32_t ns_int_mode;
+	uint32_t ns_int_mode_inherited;
 	TAILQ_ENTRY(sp_session) link;
 };
 
@@ -83,9 +71,9 @@ static inline struct sp_ctx *to_sp_ctx(struct ts_ctx *ctx)
 
 struct sp_session *sp_get_session(uint32_t session_id);
 TEE_Result sp_enter(struct thread_smc_args *args, struct sp_session *sp);
-TEE_Result sp_partition_info_get(struct ffa_partition_info *fpi,
-				 const TEE_UUID *ffa_uuid, size_t *elem_count);
-
+TEE_Result sp_partition_info_get(uint32_t ffa_vers, void *buf, size_t buf_size,
+				 const TEE_UUID *ffa_uuid, size_t *elem_count,
+				 bool count_only);
 bool sp_has_exclusive_access(struct sp_mem_map_region *mem,
 			     struct user_mode_ctx *uctx);
 TEE_Result sp_map_shared(struct sp_session *s,

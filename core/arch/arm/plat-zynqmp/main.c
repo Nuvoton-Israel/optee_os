@@ -39,7 +39,6 @@
 #include <console.h>
 #include <io.h>
 #include <kernel/boot.h>
-#include <kernel/interrupt.h>
 #include <kernel/misc.h>
 #include <kernel/tee_common_otp.h>
 #include <kernel/tee_time.h>
@@ -47,7 +46,6 @@
 #include <tee/tee_fs.h>
 #include <trace.h>
 
-static struct gic_data gic_data __nex_bss;
 static struct cdns_uart_data console_data __nex_bss;
 
 register_phys_mem_pgdir(MEM_AREA_IO_SEC,
@@ -77,17 +75,9 @@ register_ddr(DRAM1_BASE, CFG_DDR_SIZE - 0x80000000);
 register_ddr(DRAM0_BASE, CFG_DDR_SIZE);
 #endif
 
-void main_init_gic(void)
+void boot_primary_init_intc(void)
 {
-	/* On ARMv8, GIC configuration is initialized in ARM-TF */
-	gic_init_base_addr(&gic_data, GIC_BASE + GICC_OFFSET,
-			   GIC_BASE + GICD_OFFSET);
-	itr_init(&gic_data.chip);
-}
-
-void itr_core_handler(void)
-{
-	gic_it_handle(&gic_data);
+	gic_init(GIC_BASE + GICC_OFFSET, GIC_BASE + GICD_OFFSET);
 }
 
 void console_init(void)

@@ -11,7 +11,6 @@
 #include <drivers/versal_pm.h>
 #include <io.h>
 #include <kernel/boot.h>
-#include <kernel/interrupt.h>
 #include <kernel/misc.h>
 #include <kernel/tee_time.h>
 #include <mm/core_memprot.h>
@@ -26,7 +25,6 @@
 #define VERSAL_AHWROT_REG 0x14C
 #define VERSAL_SHWROT_REG 0x150
 
-static struct gic_data gic_data;
 static struct pl011_data console_data;
 
 register_phys_mem_pgdir(MEM_AREA_IO_SEC,
@@ -48,17 +46,9 @@ register_ddr(DRAM1_BASE, DRAM1_SIZE);
 register_ddr(DRAM2_BASE, DRAM2_SIZE);
 #endif
 
-void main_init_gic(void)
+void boot_primary_init_intc(void)
 {
-	/* On ARMv8, GIC configuration is initialized in ARM-TF */
-	gic_init_base_addr(&gic_data,
-			   GIC_BASE + GICC_OFFSET,
-			   GIC_BASE + GICD_OFFSET);
-}
-
-void itr_core_handler(void)
-{
-	gic_it_handle(&gic_data);
+	gic_init(GIC_BASE + GICC_OFFSET, GIC_BASE + GICD_OFFSET);
 }
 
 void console_init(void)

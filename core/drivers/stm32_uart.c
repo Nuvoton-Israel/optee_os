@@ -110,22 +110,22 @@ void stm32_uart_init(struct stm32_uart_pdata *pd, vaddr_t base)
 
 static void register_secure_uart(struct stm32_uart_pdata *pd)
 {
-	size_t n = 0;
+	size_t __maybe_unused n = 0;
 
 	stm32mp_register_secure_periph_iomem(pd->base.pa);
-	for (n = 0; n < pd->pinctrl_count; n++)
-		stm32mp_register_secure_gpio(pd->pinctrl[n].bank,
-					     pd->pinctrl[n].pin);
+	stm32mp_register_secure_pinctrl(pd->pinctrl);
+	if (pd->pinctrl_sleep)
+		stm32mp_register_secure_pinctrl(pd->pinctrl_sleep);
 }
 
 static void register_non_secure_uart(struct stm32_uart_pdata *pd)
 {
-	size_t n = 0;
+	size_t __maybe_unused n = 0;
 
 	stm32mp_register_non_secure_periph_iomem(pd->base.pa);
-	for (n = 0; n < pd->pinctrl_count; n++)
-		stm32mp_register_non_secure_gpio(pd->pinctrl[n].bank,
-						 pd->pinctrl[n].pin);
+	stm32mp_register_non_secure_pinctrl(pd->pinctrl);
+	if (pd->pinctrl_sleep)
+		stm32mp_register_non_secure_pinctrl(pd->pinctrl_sleep);
 }
 
 struct stm32_uart_pdata *stm32_uart_init_from_dt_node(void *fdt, int node)
@@ -133,8 +133,6 @@ struct stm32_uart_pdata *stm32_uart_init_from_dt_node(void *fdt, int node)
 	TEE_Result res = TEE_ERROR_GENERIC;
 	struct stm32_uart_pdata *pd = NULL;
 	struct dt_node_info info = { };
-	struct stm32_pinctrl *pinctrl_cfg = NULL;
-	int count = 0;
 
 	fdt_fill_device_info(fdt, &info, node);
 
@@ -167,20 +165,17 @@ struct stm32_uart_pdata *stm32_uart_init_from_dt_node(void *fdt, int node)
 					    pd->secure ? MEM_AREA_IO_SEC :
 					    MEM_AREA_IO_NSEC, info.reg_size);
 
-	count = stm32_pinctrl_fdt_get_pinctrl(fdt, node, NULL, 0);
-	if (count < 0)
+	res = pinctrl_get_state_by_name(fdt, node, "default", &pd->pinctrl);
+	if (res)
 		panic();
 
-	if (count) {
-		pinctrl_cfg = calloc(count, sizeof(*pinctrl_cfg));
-		if (!pinctrl_cfg)
-			panic();
+	res = pinctrl_get_state_by_name(fdt, node, "sleep", &pd->pinctrl_sleep);
+	if (res && res != TEE_ERROR_ITEM_NOT_FOUND)
+		panic();
 
-		stm32_pinctrl_fdt_get_pinctrl(fdt, node, pinctrl_cfg, count);
-		stm32_pinctrl_load_active_cfg(pinctrl_cfg, count);
-	}
-	pd->pinctrl = pinctrl_cfg;
-	pd->pinctrl_count = count;
+	res = pinctrl_apply_state(pd->pinctrl);
+	if (res)
+		panic();
 
 	if (pd->secure)
 		register_secure_uart(pd);

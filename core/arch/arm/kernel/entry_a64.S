@@ -51,6 +51,11 @@
 		ubfx	\reg, \reg, #ID_AA64PFR1_EL1_MTE_SHIFT, #4
 	.endm
 
+	.macro read_feat_pan reg
+		mrs	\reg, id_mmfr3_el1
+		ubfx	\reg, \reg, #ID_MMFR3_EL1_PAN_SHIFT, #4
+	.endm
+
 	.macro set_sctlr_el1
 		mrs	x0, sctlr_el1
 		orr	x0, x0, #SCTLR_I
@@ -143,11 +148,31 @@
 		isb
 	.endm
 
+	.macro init_pan
+		read_feat_pan x0
+		cmp	x0, #0
+		b.eq	1f
+		mrs	x0, sctlr_el1
+		bic	x0, x0, #SCTLR_SPAN
+		msr	sctlr_el1, x0
+		write_pan_enable
+	1:
+	.endm
+
 FUNC _start , :
 	/*
-	 * If CFG_CORE_FFA is enabled, then x0 if non-NULL holds the TOS FW
-	 * config [1] address, else x0 if non-NULL holds the pagable part
-	 * address.
+	 * Register use:
+	 * x0	- CFG_CORE_FFA=y && CFG_CORE_SEL2_SPMC=n:
+	 *	  if non-NULL holds the TOS FW config [1] address
+	 *	- CFG_CORE_FFA=y && CFG_CORE_SEL2_SPMC=y:
+	 *	  address of FF-A Boot Information Blob
+	 *	- CFG_CORE_FFA=n:
+	 *	  if non-NULL holds the pagable part address
+	 * x2	- CFG_CORE_SEL2_SPMC=n:
+	 *	  if non-NULL holds the system DTB address
+	 *
+	 * x19 - saved x0
+	 * x20 - saved x2
 	 *
 	 * [1] A TF-A concept: TOS_FW_CONFIG - Trusted OS Firmware
 	 * configuration file. Used by Trusted OS (BL32), that is, OP-TEE
@@ -163,6 +188,10 @@ FUNC _start , :
 	adr	x0, reset_vect_table
 	msr	vbar_el1, x0
 	isb
+
+#ifdef CFG_PAN
+	init_pan
+#endif
 
 	set_sctlr_el1
 	isb
@@ -235,12 +264,30 @@ clear_bss:
 	 * Clear .nex_bss, this code obviously depends on the linker keeping
 	 * start/end of .bss at least 8 byte aligned.
 	 */
-	adr	x0, __nex_bss_start
-	adr	x1, __nex_bss_end
+	adr_l	x0, __nex_bss_start
+	adr_l	x1, __nex_bss_end
 clear_nex_bss:
 	str	xzr, [x0], #8
 	cmp	x0, x1
 	b.lt	clear_nex_bss
+#endif
+
+
+#if defined(CFG_CORE_PHYS_RELOCATABLE)
+	/*
+	 * Save the base physical address, it will not change after this
+	 * point.
+	 */
+	adr_l	x2, core_mmu_tee_load_pa
+	adr	x1, _start		/* Load address */
+	str	x1, [x2]
+
+	mov_imm	x0, TEE_LOAD_ADDR	/* Compiled load address */
+	sub	x0, x1, x0		/* Relocatation offset */
+
+	cbz	x0, 1f
+	bl	relocate
+1:
 #endif
 
 	/* Setup SP_EL0 and SP_EL1, SP will be set to SP_EL0 */
@@ -265,6 +312,11 @@ clear_nex_bss:
 	/* Enable Console */
 	bl	console_init
 
+#if defined(CFG_CORE_SEL2_SPMC) && defined(CFG_CORE_PHYS_RELOCATABLE)
+	mov	x0, x19		/* boot info */
+	bl	boot_save_boot_info
+#endif
+
 #ifdef CFG_MEMTAG
 	/*
 	 * If FEAT_MTE2 is available, initializes the memtag callbacks.
@@ -275,7 +327,7 @@ clear_nex_bss:
 #endif
 
 #ifdef CFG_CORE_ASLR
-	mov	x0, x20
+	mov	x0, x20		/* DT address */
 	bl	get_aslr_seed
 #else
 	mov	x0, #0
@@ -291,6 +343,7 @@ clear_nex_bss:
 	 * of the memory will become write protected.
 	 */
 	ldr	x0, boot_mmu_config + CORE_MMU_CONFIG_MAP_OFFSET
+	cbz	x0, 1f
 	/*
 	 * Update cached_mem_end address with load offset since it was
 	 * calculated before relocation.
@@ -299,7 +352,9 @@ clear_nex_bss:
 	ldr	x6, [x5]
 	add	x6, x6, x0
 	str	x6, [x5]
+	adr	x1, _start		/* Load address */
 	bl	relocate
+1:
 #endif
 
 	bl	__get_core_pos
@@ -361,9 +416,15 @@ clear_nex_bss:
 
 #ifdef _CFG_CORE_STACK_PROTECTOR
 	/* Update stack canary value */
-	bl	plat_get_random_stack_canary
+	sub	sp, sp, #0x10
+	mov	x0, sp
+	mov	x1, #1
+	mov	x2, #0x8
+	bl	plat_get_random_stack_canaries
+	ldr	x0, [sp]
 	adr_l	x5, __stack_chk_guard
 	str	x0, [x5]
+	add	sp, sp, #0x10
 #endif
 
 	/*
@@ -419,9 +480,12 @@ LOCAL_DATA cached_mem_end , :
 	.skip	8
 END_DATA cached_mem_end
 
-#ifdef CFG_CORE_ASLR
+#if defined(CFG_CORE_ASLR) || defined(CFG_CORE_PHYS_RELOCATABLE)
 LOCAL_FUNC relocate , :
-	/* x0 holds load offset */
+	/*
+	 * x0 holds relocate offset
+	 * x1 holds load address
+	 */
 #ifdef CFG_WITH_PAGER
 	adr_l	x6, __init_end
 #else
@@ -429,7 +493,6 @@ LOCAL_FUNC relocate , :
 #endif
 	ldp	w2, w3, [x6, #BOOT_EMBDATA_RELOC_OFFSET]
 
-	mov_imm	x1, TEE_LOAD_ADDR
 	add	x2, x2, x6	/* start of relocations */
 	add	x3, x3, x2	/* end of relocations */
 
@@ -561,6 +624,10 @@ FUNC cpu_on_handler , :
 
 	set_sctlr_el1
 	isb
+
+#ifdef CFG_PAN
+	init_pan
+#endif
 
 	/* Enable aborts now that we can receive exceptions */
 	msr	daifclr, #DAIFBIT_ABT

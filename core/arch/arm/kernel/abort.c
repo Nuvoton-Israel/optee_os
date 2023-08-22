@@ -11,6 +11,7 @@
 #include <kernel/tee_ta_manager.h>
 #include <kernel/thread_private.h>
 #include <kernel/user_mode_ctx.h>
+#include <memtag.h>
 #include <mm/core_mmu.h>
 #include <mm/mobj.h>
 #include <mm/tee_pager.h>
@@ -148,9 +149,16 @@ __print_abort_info(struct abort_info *ai __maybe_unused,
 #endif /*ARM64*/
 
 	EMSG_RAW("");
-	EMSG_RAW("%s %s-abort at address 0x%" PRIxVA "%s",
-		ctx, abort_type_to_str(ai->abort_type), ai->va,
-		fault_to_str(ai->abort_type, ai->fault_descr));
+	if (IS_ENABLED(CFG_MEMTAG))
+		EMSG_RAW("%s %s-abort at address 0x%" PRIxVA
+			 " [tagged 0x%" PRIxVA "]%s", ctx,
+			 abort_type_to_str(ai->abort_type),
+			 memtag_strip_tag_vaddr((void *)ai->va), ai->va,
+			 fault_to_str(ai->abort_type, ai->fault_descr));
+	else
+		EMSG_RAW("%s %s-abort at address 0x%" PRIxVA "%s", ctx,
+			 abort_type_to_str(ai->abort_type), ai->va,
+			 fault_to_str(ai->abort_type, ai->fault_descr));
 #ifdef ARM32
 	EMSG_RAW(" fsr 0x%08x  ttbr0 0x%08x  ttbr1 0x%08x  cidr 0x%X",
 		 ai->fault_descr, read_ttbr0(), read_ttbr1(),
@@ -351,6 +359,7 @@ static void handle_user_mode_panic(struct abort_info *ai)
 {
 	struct thread_ctx *tc __maybe_unused = NULL;
 	uint32_t daif = 0;
+	uint32_t pan_bit = 0;
 
 	/*
 	 * It was a user exception, stop user execution and return
@@ -372,9 +381,12 @@ static void handle_user_mode_panic(struct abort_info *ai)
 	ai->regs->apiakey_lo = tc->keys.apia_lo;
 #endif
 
+	if (IS_ENABLED(CFG_PAN) && feat_pan_implemented() && read_pan())
+		pan_bit = SPSR_64_PAN;
 	daif = (ai->regs->spsr >> SPSR_32_AIF_SHIFT) & SPSR_32_AIF_MASK;
 	/* XXX what about DAIF_D? */
-	ai->regs->spsr = SPSR_64(SPSR_64_MODE_EL1, SPSR_64_MODE_SP_EL0, daif);
+	ai->regs->spsr = SPSR_64(SPSR_64_MODE_EL1, SPSR_64_MODE_SP_EL0, daif) |
+			 pan_bit;
 }
 #endif /*ARM64*/
 

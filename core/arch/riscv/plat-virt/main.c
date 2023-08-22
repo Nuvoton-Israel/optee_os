@@ -22,7 +22,7 @@ register_phys_mem_pgdir(MEM_AREA_IO_NSEC, UART0_BASE,
 void main_init_plic(void)
 {
 	plic_init(&plic_data, PLIC_BASE);
-	itr_init(&plic_data.chip);
+	interrupt_main_init(&plic_data.chip);
 }
 
 void main_secondary_init_plic(void)
@@ -37,7 +37,7 @@ void console_init(void)
 	register_serial_console(&console_data.chip);
 }
 
-void itr_core_handler(void)
+void interrupt_main_handler(void)
 {
 	if (IS_ENABLED(CFG_RISCV_PLIC))
 		plic_it_handle(&plic_data);

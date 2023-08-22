@@ -70,6 +70,7 @@
  * MEM_AREA_IDENTITY_MAP_RX: core identity mapped r/o executable memory (secure)
  * MEM_AREA_TA_RAM:   Secure RAM where teecore loads/exec TA instances.
  * MEM_AREA_NSEC_SHM: NonSecure shared RAM between NSec and TEE.
+ * MEM_AREA_NEX_NSEC_SHM: nexus non-secure shared RAM between NSec and TEE.
  * MEM_AREA_RAM_NSEC: NonSecure RAM storing data
  * MEM_AREA_RAM_SEC:  Secure RAM storing some secrets
  * MEM_AREA_IO_NSEC:  NonSecure HW mapped registers
@@ -97,6 +98,7 @@ enum teecore_memtypes {
 	MEM_AREA_IDENTITY_MAP_RX,
 	MEM_AREA_TA_RAM,
 	MEM_AREA_NSEC_SHM,
+	MEM_AREA_NEX_NSEC_SHM,
 	MEM_AREA_RAM_NSEC,
 	MEM_AREA_RAM_SEC,
 	MEM_AREA_IO_NSEC,
@@ -129,6 +131,7 @@ static inline const char *teecore_memtype_name(enum teecore_memtypes type)
 		[MEM_AREA_TEE_COHERENT] = "TEE_COHERENT",
 		[MEM_AREA_TA_RAM] = "TA_RAM",
 		[MEM_AREA_NSEC_SHM] = "NSEC_SHM",
+		[MEM_AREA_NEX_NSEC_SHM] = "NEX_NSEC_SHM",
 		[MEM_AREA_RAM_NSEC] = "RAM_NSEC",
 		[MEM_AREA_RAM_SEC] = "RAM_SEC",
 		[MEM_AREA_IO_NSEC] = "IO_NSEC",
@@ -270,6 +273,16 @@ extern unsigned long default_nsec_shm_paddr;
 extern unsigned long default_nsec_shm_size;
 #endif
 
+/*
+ * Physical load address of OP-TEE updated during boot if needed to reflect
+ * the value used.
+ */
+#ifdef CFG_CORE_PHYS_RELOCATABLE
+extern unsigned long core_mmu_tee_load_pa;
+#else
+extern const unsigned long core_mmu_tee_load_pa;
+#endif
+
 void core_init_mmu_map(unsigned long seed, struct core_mmu_config *cfg);
 void core_init_mmu_regs(struct core_mmu_config *cfg);
 
@@ -362,18 +375,20 @@ void core_mmu_set_user_map(struct core_mmu_user_map *map);
  * @table:	Pointer to translation table
  * @va_base:	VA base address of the transaltion table
  * @level:	Translation table level
+ * @next_level:	Finer grained translation table level according to @level.
  * @shift:	The shift of each entry in the table
  * @num_entries: Number of entries in this table.
  */
 struct core_mmu_table_info {
 	void *table;
 	vaddr_t va_base;
-	unsigned level;
-	unsigned shift;
 	unsigned num_entries;
 #ifdef CFG_NS_VIRTUALIZATION
 	struct mmu_partition *prtn;
 #endif
+	uint8_t level;
+	uint8_t shift;
+	uint8_t next_level;
 };
 
 /*
@@ -554,18 +569,18 @@ struct tee_mmap_region *
 core_mmu_find_mapping_exclusive(enum teecore_memtypes type, size_t len);
 
 /*
- * tlbi_mva_range() - Invalidate TLB for virtual address range
+ * tlbi_va_range() - Invalidate TLB for virtual address range
  * @va:		start virtual address, must be a multiple of @granule
  * @len:	length in bytes of range, must be a multiple of @granule
  * @granule:	granularity of mapping, supported values are
  *		CORE_MMU_PGDIR_SIZE or SMALL_PAGE_SIZE. This value must
  *		match the actual mappings.
  */
-void tlbi_mva_range(vaddr_t va, size_t len, size_t granule);
+void tlbi_va_range(vaddr_t va, size_t len, size_t granule);
 
 /*
- * tlbi_mva_range_asid() - Invalidate TLB for virtual address range for
- *			   a specific ASID
+ * tlbi_va_range_asid() - Invalidate TLB for virtual address range for
+ *			  a specific ASID
  * @va:		start virtual address, must be a multiple of @granule
  * @len:	length in bytes of range, must be a multiple of @granule
  * @granule:	granularity of mapping, supported values are
@@ -573,7 +588,7 @@ void tlbi_mva_range(vaddr_t va, size_t len, size_t granule);
  *		match the actual mappings.
  * @asid:	Address space identifier
  */
-void tlbi_mva_range_asid(vaddr_t va, size_t len, size_t granule, uint32_t asid);
+void tlbi_va_range_asid(vaddr_t va, size_t len, size_t granule, uint32_t asid);
 
 /* Check cpu mmu enabled or not */
 bool cpu_mmu_enabled(void);
@@ -640,6 +655,19 @@ static inline bool core_mmu_check_end_pa(paddr_t pa, size_t len)
 	return core_mmu_check_max_pa(end_pa);
 }
 
+#ifdef CFG_CORE_PHYS_RELOCATABLE
+/*
+ * core_mmu_set_secure_memory() - set physical secure memory range
+ * @base: base address of secure memory
+ * @size: size of secure memory
+ *
+ * The physical secure memory range is not known in advance when OP-TEE is
+ * relocatable, this information must be supplied once during boot before
+ * the translation tables can be initialized and the MMU enabled.
+ */
+void core_mmu_set_secure_memory(paddr_t base, size_t size);
+#endif
+
 /*
  * core_mmu_get_secure_memory() - get physical secure memory range
  * @base: base address of secure memory
@@ -650,6 +678,13 @@ static inline bool core_mmu_check_end_pa(paddr_t pa, size_t len)
  * configuration.
  */
 void core_mmu_get_secure_memory(paddr_t *base, paddr_size_t *size);
+
+/*
+ * core_mmu_get_ta_range() - get physical memory range reserved for TAs
+ * @base: [out] range base address ref or NULL
+ * @size: [out] range size ref or NULL
+ */
+void core_mmu_get_ta_range(paddr_t *base, size_t *size);
 
 #endif /*__ASSEMBLER__*/
 

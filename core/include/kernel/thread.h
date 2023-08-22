@@ -19,6 +19,7 @@
 #define THREAD_FLAGS_COPY_ARGS_ON_RETURN	BIT(0)
 #define THREAD_FLAGS_FOREIGN_INTR_ENABLE	BIT(1)
 #define THREAD_FLAGS_EXIT_ON_FOREIGN_INTR	BIT(2)
+#define THREAD_FLAGS_FFA_ONLY			BIT(3)
 
 #define THREAD_ID_0		0
 #define THREAD_ID_INVALID	-1
@@ -50,6 +51,12 @@ struct thread_specific_data {
 void thread_init_canaries(void);
 void thread_init_primary(void);
 void thread_init_per_cpu(void);
+
+#if defined(CFG_WITH_STACK_CANARIES)
+void thread_update_canaries(void);
+#else
+static inline void thread_update_canaries(void) { }
+#endif
 
 struct thread_core_local *thread_get_core_local(void);
 

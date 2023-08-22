@@ -48,6 +48,10 @@
 
 #define SP_MANIFEST_FLAG_NOBITS	BIT(0)
 
+#define SP_MANIFEST_NS_INT_QUEUED	(0x0)
+#define SP_MANIFEST_NS_INT_MANAGED_EXIT	(0x1)
+#define SP_MANIFEST_NS_INT_SIGNALED	(0x2)
+
 #define SP_PKG_HEADER_MAGIC (0x474b5053)
 #define SP_PKG_HEADER_VERSION_V1 (0x1)
 #define SP_PKG_HEADER_VERSION_V2 (0x2)
@@ -109,12 +113,14 @@ struct sp_session *sp_get_session(uint32_t session_id)
 	return NULL;
 }
 
-TEE_Result sp_partition_info_get(struct ffa_partition_info *fpi,
-				 const TEE_UUID *ffa_uuid, size_t *elem_count)
+TEE_Result sp_partition_info_get(uint32_t ffa_vers, void *buf, size_t buf_size,
+				 const TEE_UUID *ffa_uuid, size_t *elem_count,
+				 bool count_only)
 {
-	size_t in_count = *elem_count;
+	TEE_Result res = TEE_SUCCESS;
+	uint32_t part_props = FFA_PART_PROP_DIRECT_REQ_RECV |
+			      FFA_PART_PROP_DIRECT_REQ_SEND;
 	struct sp_session *s = NULL;
-	size_t count = 0;
 
 	TAILQ_FOREACH(s, &open_sp_sessions, link) {
 		if (ffa_uuid &&
@@ -123,18 +129,19 @@ TEE_Result sp_partition_info_get(struct ffa_partition_info *fpi,
 
 		if (s->state == sp_dead)
 			continue;
-		if (count < in_count) {
-			spmc_fill_partition_entry(fpi, s->endpoint_id, 1);
-			fpi++;
+		if (!count_only && !res) {
+			uint32_t uuid_words[4] = { 0 };
+
+			tee_uuid_to_octets((uint8_t *)uuid_words, &s->ffa_uuid);
+			res = spmc_fill_partition_entry(ffa_vers, buf, buf_size,
+							*elem_count,
+							s->endpoint_id, 1,
+							part_props, uuid_words);
 		}
-		count++;
+		*elem_count += 1;
 	}
 
-	*elem_count = count;
-	if (count > in_count)
-		return TEE_ERROR_SHORT_BUFFER;
-
-	return TEE_SUCCESS;
+	return res;
 }
 
 bool sp_has_exclusive_access(struct sp_mem_map_region *mem,
@@ -581,32 +588,95 @@ static TEE_Result fdt_get_uuid(const void * const fdt, TEE_UUID *uuid)
 	return TEE_SUCCESS;
 }
 
-/*
- * sp_init_info allocates and maps the sp_ffa_init_info for the SP. It will copy
- * the fdt into the allocated page(s) and return a pointer to the new location
- * of the fdt. This pointer can be used to update data inside the fdt.
- */
-static TEE_Result sp_init_info(struct sp_ctx *ctx, struct thread_smc_args *args,
-			       const void * const input_fdt, vaddr_t *va,
-			       size_t *num_pgs, void **fdt_copy)
+static TEE_Result copy_and_map_fdt(struct sp_ctx *ctx, const void * const fdt,
+				   void **fdt_copy, size_t *mapped_size)
 {
-	struct sp_ffa_init_info *info = NULL;
-	int nvp_count = 1;
-	size_t total_size = ROUNDUP(CFG_SP_INIT_INFO_MAX_SIZE, SMALL_PAGE_SIZE);
-	size_t nvp_size = sizeof(struct sp_name_value_pair) * nvp_count;
-	size_t info_size = sizeof(*info) + nvp_size;
-	size_t fdt_size = total_size - info_size;
+	size_t total_size = ROUNDUP(fdt_totalsize(fdt), SMALL_PAGE_SIZE);
+	size_t num_pages = total_size / SMALL_PAGE_SIZE;
+	uint32_t perm = TEE_MATTR_UR | TEE_MATTR_PRW;
 	TEE_Result res = TEE_SUCCESS;
-	uint32_t perm = TEE_MATTR_URW | TEE_MATTR_PRW;
-	struct fobj *f = NULL;
 	struct mobj *m = NULL;
+	struct fobj *f = NULL;
+	vaddr_t va = 0;
+
+	f = fobj_sec_mem_alloc(num_pages);
+	m = mobj_with_fobj_alloc(f, NULL, TEE_MATTR_MEM_TYPE_TAGGED);
+	fobj_put(f);
+	if (!m)
+		return TEE_ERROR_OUT_OF_MEMORY;
+
+	res = vm_map(&ctx->uctx, &va, total_size, perm, 0, m, 0);
+	mobj_put(m);
+	if (res)
+		return res;
+
+	if (fdt_open_into(fdt, (void *)va, total_size))
+		return TEE_ERROR_GENERIC;
+
+	*fdt_copy = (void *)va;
+	*mapped_size = total_size;
+
+	return res;
+}
+
+static void fill_boot_info_1_0(vaddr_t buf, const void *fdt)
+{
+	struct ffa_boot_info_1_0 *info = (struct ffa_boot_info_1_0 *)buf;
 	static const char fdt_name[16] = "TYPE_DT\0\0\0\0\0\0\0\0";
 
-	*num_pgs = total_size / SMALL_PAGE_SIZE;
+	memcpy(&info->magic, "FF-A", 4);
+	info->count = 1;
 
-	f = fobj_sec_mem_alloc(*num_pgs);
+	COMPILE_TIME_ASSERT(sizeof(info->nvp[0].name) == sizeof(fdt_name));
+	memcpy(info->nvp[0].name, fdt_name, sizeof(fdt_name));
+	info->nvp[0].value = (uintptr_t)fdt;
+	info->nvp[0].size = fdt_totalsize(fdt);
+}
+
+static void fill_boot_info_1_1(vaddr_t buf, const void *fdt)
+{
+	size_t desc_offs = ROUNDUP(sizeof(struct ffa_boot_info_header_1_1), 8);
+	struct ffa_boot_info_header_1_1 *header =
+		(struct ffa_boot_info_header_1_1 *)buf;
+	struct ffa_boot_info_1_1 *desc =
+		(struct ffa_boot_info_1_1 *)(buf + desc_offs);
+
+	header->signature = FFA_BOOT_INFO_SIGNATURE;
+	header->version = FFA_BOOT_INFO_VERSION;
+	header->blob_size = desc_offs + sizeof(struct ffa_boot_info_1_1);
+	header->desc_size = sizeof(struct ffa_boot_info_1_1);
+	header->desc_count = 1;
+	header->desc_offset = desc_offs;
+
+	memset(&desc[0].name, 0, sizeof(desc[0].name));
+	/* Type: Standard boot info (bit[7] == 0), FDT type */
+	desc[0].type = FFA_BOOT_INFO_TYPE_ID_FDT;
+	/* Flags: Contents field contains an address */
+	desc[0].flags = FFA_BOOT_INFO_FLAG_CONTENT_FORMAT_ADDR <<
+			FFA_BOOT_INFO_FLAG_CONTENT_FORMAT_SHIFT;
+	desc[0].size = fdt_totalsize(fdt);
+	desc[0].contents = (uintptr_t)fdt;
+}
+
+static TEE_Result create_and_map_boot_info(struct sp_ctx *ctx, const void *fdt,
+					   struct thread_smc_args *args,
+					   vaddr_t *va, size_t *mapped_size)
+{
+	size_t total_size = ROUNDUP(CFG_SP_INIT_INFO_MAX_SIZE, SMALL_PAGE_SIZE);
+	size_t num_pages = total_size / SMALL_PAGE_SIZE;
+	uint32_t perm = TEE_MATTR_UR | TEE_MATTR_PRW;
+	TEE_Result res = TEE_SUCCESS;
+	uint32_t sp_ffa_version = 0;
+	struct fobj *f = NULL;
+	struct mobj *m = NULL;
+	uint32_t info_reg = 0;
+
+	res = sp_dt_get_u32(fdt, 0, "ffa-version", &sp_ffa_version);
+	if (res)
+		return res;
+
+	f = fobj_sec_mem_alloc(num_pages);
 	m = mobj_with_fobj_alloc(f, NULL, TEE_MATTR_MEM_TYPE_TAGGED);
-
 	fobj_put(f);
 	if (!m)
 		return TEE_ERROR_OUT_OF_MEMORY;
@@ -616,25 +686,47 @@ static TEE_Result sp_init_info(struct sp_ctx *ctx, struct thread_smc_args *args,
 	if (res)
 		return res;
 
-	info = (struct sp_ffa_init_info *)*va;
+	*mapped_size = total_size;
 
-	/* magic field is 4 bytes, we don't copy /0 byte. */
-	memcpy(&info->magic, "FF-A", 4);
-	info->count = nvp_count;
-	args->a0 = (vaddr_t)info;
+	switch (sp_ffa_version) {
+	case MAKE_FFA_VERSION(1, 0):
+		fill_boot_info_1_0(*va, fdt);
+		break;
+	case MAKE_FFA_VERSION(1, 1):
+		fill_boot_info_1_1(*va, fdt);
+		break;
+	default:
+		EMSG("Unknown FF-A version: %#"PRIx32, sp_ffa_version);
+		return TEE_ERROR_NOT_SUPPORTED;
+	}
 
-	/*
-	 * Store the fdt after the boot_info and store the pointer in the
-	 * first element.
-	 */
-	COMPILE_TIME_ASSERT(sizeof(info->nvp[0].name) == sizeof(fdt_name));
-	memcpy(info->nvp[0].name, fdt_name, sizeof(fdt_name));
-	info->nvp[0].value = *va + info_size;
-	info->nvp[0].size = fdt_size;
-	*fdt_copy = (void *)info->nvp[0].value;
+	res = sp_dt_get_u32(fdt, 0, "gp-register-num", &info_reg);
+	if (res) {
+		if (res == TEE_ERROR_ITEM_NOT_FOUND) {
+			/* If the property is not present, set default to x0 */
+			info_reg = 0;
+		} else {
+			return TEE_ERROR_BAD_FORMAT;
+		}
+	}
 
-	if (fdt_open_into(input_fdt, *fdt_copy, fdt_size))
-		return TEE_ERROR_GENERIC;
+	switch (info_reg) {
+	case 0:
+		args->a0 = *va;
+		break;
+	case 1:
+		args->a1 = *va;
+		break;
+	case 2:
+		args->a2 = *va;
+		break;
+	case 3:
+		args->a3 = *va;
+		break;
+	default:
+		EMSG("Invalid register selected for passing boot info");
+		return TEE_ERROR_BAD_FORMAT;
+	}
 
 	return TEE_SUCCESS;
 }
@@ -1211,6 +1303,37 @@ static TEE_Result handle_hw_features(void *fdt)
 	return TEE_SUCCESS;
 }
 
+static TEE_Result read_ns_interrupts_action(const void *fdt,
+					    struct sp_session *s)
+{
+	TEE_Result res = TEE_ERROR_BAD_PARAMETERS;
+
+	res = sp_dt_get_u32(fdt, 0, "ns-interrupts-action", &s->ns_int_mode);
+
+	if (res) {
+		EMSG("Mandatory property is missing: ns-interrupts-action");
+		return res;
+	}
+
+	switch (s->ns_int_mode) {
+	case SP_MANIFEST_NS_INT_QUEUED:
+	case SP_MANIFEST_NS_INT_SIGNALED:
+		/* OK */
+		break;
+
+	case SP_MANIFEST_NS_INT_MANAGED_EXIT:
+		EMSG("Managed exit is not implemented");
+		return TEE_ERROR_NOT_IMPLEMENTED;
+
+	default:
+		EMSG("Invalid ns-interrupts-action value: %"PRIu32,
+		     s->ns_int_mode);
+		return TEE_ERROR_BAD_PARAMETERS;
+	}
+
+	return TEE_SUCCESS;
+}
+
 static TEE_Result sp_init_uuid(const TEE_UUID *bin_uuid, const void * const fdt)
 {
 	TEE_Result res = TEE_SUCCESS;
@@ -1233,6 +1356,10 @@ static TEE_Result sp_init_uuid(const TEE_UUID *bin_uuid, const void * const fdt)
 		return res;
 	DMSG("endpoint is 0x%"PRIx16, sess->endpoint_id);
 
+	res = read_ns_interrupts_action(fdt, sess);
+	if (res)
+		return res;
+
 	return TEE_SUCCESS;
 }
 
@@ -1240,13 +1367,15 @@ static TEE_Result sp_first_run(struct sp_session *sess)
 {
 	TEE_Result res = TEE_SUCCESS;
 	struct thread_smc_args args = { };
-	vaddr_t va = 0;
-	size_t num_pgs = 0;
 	struct sp_ctx *ctx = NULL;
+	vaddr_t boot_info_va = 0;
+	size_t boot_info_size = 0;
 	void *fdt_copy = NULL;
+	size_t fdt_size = 0;
 
 	ctx = to_sp_ctx(sess->ts_sess.ctx);
 	ts_push_current_session(&sess->ts_sess);
+	sess->is_initialized = false;
 
 	/*
 	 * Load relative memory regions must be handled before doing any other
@@ -1258,7 +1387,7 @@ static TEE_Result sp_first_run(struct sp_session *sess)
 		return res;
 	}
 
-	res = sp_init_info(ctx, &args, sess->fdt, &va, &num_pgs, &fdt_copy);
+	res = copy_and_map_fdt(ctx, sess->fdt, &fdt_copy, &fdt_size);
 	if (res)
 		goto out;
 
@@ -1280,22 +1409,28 @@ static TEE_Result sp_first_run(struct sp_session *sess)
 	if (res)
 		goto out;
 
+	res = create_and_map_boot_info(ctx, fdt_copy, &args, &boot_info_va,
+				       &boot_info_size);
+	if (res)
+		goto out;
+
 	ts_pop_current_session();
 
-	sess->is_initialized = false;
-	if (sp_enter(&args, sess)) {
-		vm_unmap(&ctx->uctx, va, num_pgs);
-		return FFA_ABORTED;
+	res = sp_enter(&args, sess);
+	if (res) {
+		ts_push_current_session(&sess->ts_sess);
+		goto out;
 	}
 
 	spmc_sp_msg_handler(&args, sess);
 
+	ts_push_current_session(&sess->ts_sess);
 	sess->is_initialized = true;
 
-	ts_push_current_session(&sess->ts_sess);
 out:
 	/* Free the boot info page from the SP memory */
-	vm_unmap(&ctx->uctx, va, num_pgs);
+	vm_unmap(&ctx->uctx, boot_info_va, boot_info_size);
+	vm_unmap(&ctx->uctx, (vaddr_t)fdt_copy, fdt_size);
 	ts_pop_current_session();
 
 	return res;
@@ -1303,7 +1438,7 @@ out:
 
 TEE_Result sp_enter(struct thread_smc_args *args, struct sp_session *sp)
 {
-	TEE_Result res = FFA_OK;
+	TEE_Result res = TEE_SUCCESS;
 	struct sp_ctx *ctx = to_sp_ctx(sp->ts_sess.ctx);
 
 	ctx->sp_regs.x[0] = args->a0;
@@ -1329,16 +1464,47 @@ TEE_Result sp_enter(struct thread_smc_args *args, struct sp_session *sp)
 	return res;
 }
 
+/*
+ * According to FF-A v1.1 section 8.3.1.4 if a caller requires less permissive
+ * active on NS interrupt than the callee, the callee must inherit the caller's
+ * configuration.
+ * Each SP's own NS action setting is stored in ns_int_mode. The effective
+ * action will be MIN([self action], [caller's action]) which is stored in the
+ * ns_int_mode_inherited field.
+ */
+static void sp_cpsr_configure_foreign_interrupts(struct sp_session *s,
+						 struct ts_session *caller,
+						 uint64_t *cpsr)
+{
+	if (caller) {
+		struct sp_session *caller_sp = to_sp_session(caller);
+
+		s->ns_int_mode_inherited = MIN(caller_sp->ns_int_mode_inherited,
+					       s->ns_int_mode);
+	} else {
+		s->ns_int_mode_inherited = s->ns_int_mode;
+	}
+
+	if (s->ns_int_mode_inherited == SP_MANIFEST_NS_INT_QUEUED)
+		*cpsr |= SHIFT_U32(THREAD_EXCP_FOREIGN_INTR,
+				   ARM32_CPSR_F_SHIFT);
+	else
+		*cpsr &= ~SHIFT_U32(THREAD_EXCP_FOREIGN_INTR,
+				    ARM32_CPSR_F_SHIFT);
+}
+
 static TEE_Result sp_enter_invoke_cmd(struct ts_session *s,
 				      uint32_t cmd __unused)
 {
 	struct sp_ctx *ctx = to_sp_ctx(s->ctx);
 	TEE_Result res = TEE_SUCCESS;
 	uint32_t exceptions = 0;
-	uint64_t cpsr = 0;
 	struct sp_session *sp_s = to_sp_session(s);
 	struct ts_session *sess = NULL;
 	struct thread_ctx_regs *sp_regs = NULL;
+	uint32_t thread_id = THREAD_ID_INVALID;
+	struct ts_session *caller = NULL;
+	uint32_t rpc_target_info = 0;
 	uint32_t panicked = false;
 	uint32_t panic_code = 0;
 
@@ -1347,12 +1513,27 @@ static TEE_Result sp_enter_invoke_cmd(struct ts_session *s,
 	sp_regs = &ctx->sp_regs;
 	ts_push_current_session(s);
 
-	cpsr = sp_regs->cpsr;
-	sp_regs->cpsr = read_daif() & (SPSR_64_DAIF_MASK << SPSR_64_DAIF_SHIFT);
-
 	exceptions = thread_mask_exceptions(THREAD_EXCP_ALL);
+
+	/* Enable/disable foreign interrupts in CPSR/SPSR */
+	caller = ts_get_calling_session();
+	sp_cpsr_configure_foreign_interrupts(sp_s, caller, &sp_regs->cpsr);
+
+	/*
+	 * Store endpoint ID and thread ID in rpc_target_info. This will be used
+	 * as w1 in FFA_INTERRUPT in case of a foreign interrupt.
+	 */
+	rpc_target_info = thread_get_tsd()->rpc_target_info;
+	thread_id = thread_get_id();
+	assert(thread_id <= UINT16_MAX);
+	thread_get_tsd()->rpc_target_info =
+		FFA_TARGET_INFO_SET(sp_s->endpoint_id, thread_id);
+
 	__thread_enter_user_mode(sp_regs, &panicked, &panic_code);
-	sp_regs->cpsr = cpsr;
+
+	/* Restore rpc_target_info */
+	thread_get_tsd()->rpc_target_info = rpc_target_info;
+
 	thread_unmask_exceptions(exceptions);
 
 	thread_user_clear_vfp(&ctx->uctx);

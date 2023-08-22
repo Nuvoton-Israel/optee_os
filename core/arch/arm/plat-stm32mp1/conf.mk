@@ -92,6 +92,8 @@ include core/arch/arm/cpu/cortex-a7.mk
 
 $(call force,CFG_DRIVERS_CLK,y)
 $(call force,CFG_DRIVERS_CLK_DT,y)
+$(call force,CFG_DRIVERS_GPIO,y)
+$(call force,CFG_DRIVERS_PINCTRL,y)
 $(call force,CFG_GIC,y)
 $(call force,CFG_INIT_CNTVOFF,y)
 $(call force,CFG_PSCI_ARM32,y)
@@ -112,6 +114,7 @@ $(call force,CFG_TEE_CORE_NB_CORE,1)
 $(call force,CFG_WITH_NSEC_GPIOS,n)
 CFG_EXTERNAL_DT ?= n
 CFG_STM32MP_OPP_COUNT ?= 2
+CFG_STM32MP1_SCMI_SHM_SYSRAM ?= y
 CFG_WITH_PAGER ?= n
 endif # CFG_STM32MP13
 
@@ -149,8 +152,23 @@ endif
 
 CFG_DRAM_BASE    ?= 0xc0000000
 CFG_DRAM_SIZE    ?= 0x40000000
-CFG_STM32MP1_SCMI_SHM_BASE ?= 0x2ffff000
-CFG_STM32MP1_SCMI_SHM_SIZE ?= 0x00001000
+
+# CFG_STM32MP1_SCMI_SHM_BASE and CFG_STM32MP1_SCMI_SHM_SIZE define the
+# device memory mapped SRAM used for SCMI message transfers.
+# When CFG_STM32MP1_SCMI_SHM_BASE is set to 0, the platform uses OP-TEE
+# native shared memory for SCMI communication instead of SRAM.
+#
+# When CFG_STM32MP1_SCMI_SHM_SYSRAM is enabled, OP-TEE uses the
+# last 4KB page of SYSRAM as SCMI shared memory. The switch is default
+# disabled.
+CFG_STM32MP1_SCMI_SHM_SYSRAM ?= n
+ifeq ($(CFG_STM32MP1_SCMI_SHM_SYSRAM),y)
+$(call force,CFG_STM32MP1_SCMI_SHM_BASE,0x2ffff000)
+else
+CFG_STM32MP1_SCMI_SHM_BASE ?= 0
+endif
+$(call force,CFG_STM32MP1_SCMI_SHM_SIZE,0x1000)
+
 ifeq ($(CFG_STM32MP15),y)
 CFG_TZDRAM_START ?= 0xfe000000
 ifeq ($(CFG_CORE_RESERVED_SHM),y)
@@ -230,7 +248,7 @@ CFG_SCMI_PTA ?= y
 ifeq ($(CFG_SCMI_PTA),y)
 ifneq ($(CFG_SCMI_SCPFW),y)
 $(call force,CFG_SCMI_MSG_DRIVERS,y,Mandated by CFG_SCMI_PTA)
-$(call force,CFG_SCMI_MSG_SMT_THREAD_ENTRY,y,Mandated by CFG_SCMI_PTA)
+CFG_SCMI_MSG_SMT_THREAD_ENTRY ?= y
 CFG_SCMI_MSG_SHM_MSG ?= y
 CFG_SCMI_MSG_SMT ?= y
 endif # !CFG_SCMI_SCPFW

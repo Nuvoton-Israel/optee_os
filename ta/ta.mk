@@ -125,10 +125,6 @@ incfiles-extra-host += core/include/signed_hdr.h
 ifeq ($(ta-target),ta_arm32)
 incfiles-extra-host += $(out-dir)/include/generated/arm32_user_sysreg.h
 endif
-ifeq ($(CFG_SPMC_TESTS),y)
-incfiles-extra-host += core/arch/arm/include/ffa.h
-incfiles-extra-host += core/arch/arm/include/smccc.h
-endif
 #
 # Copy lib files and exported headers from each lib
 #
@@ -183,7 +179,13 @@ $(foreach f, $(ta-srcfiles), \
 	$(eval $(call copy-file, $(f), $(out-dir)/export-$(sm)/src)))
 
 # Copy keys
-ta-keys = keys/default_ta.pem
+ta-keys := $(TA_SIGN_KEY)
+# default_ta.pem is a symlink to default.pem, for backwards compatibility.
+# If default_ta.pem is used, copy both files.
+ifeq ($(TA_SIGN_KEY),keys/default_ta.pem)
+ta-keys += keys/default.pem
+endif
+
 $(foreach f, $(ta-keys), \
 	$(eval $(call copy-file, $(f), $(out-dir)/export-$(sm)/keys)))
 

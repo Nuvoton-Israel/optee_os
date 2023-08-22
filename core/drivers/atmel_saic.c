@@ -43,7 +43,7 @@ static uint32_t saic_read_reg(uint32_t reg)
 	return io_read32(saic.base + reg);
 }
 
-void atmel_saic_it_handle(void)
+void interrupt_main_handler(void)
 {
 	uint32_t irqnr = saic_read_reg(AT91_AIC_IVR);
 
@@ -149,6 +149,8 @@ static void saic_set_affinity(struct itr_chip *chip __unused,
 
 static const struct itr_ops saic_ops = {
 	.add = saic_add,
+	.mask = saic_disable,
+	.unmask = saic_enable,
 	.enable = saic_enable,
 	.disable = saic_disable,
 	.raise_pi = saic_raise_pi,
@@ -295,7 +297,7 @@ TEE_Result atmel_saic_setup(void)
 	saic_init_external(fdt, node);
 	saic_init_hw();
 
-	itr_init(&saic_chip);
+	interrupt_main_init(&saic_chip);
 	saic_register_pm();
 
 	return TEE_SUCCESS;

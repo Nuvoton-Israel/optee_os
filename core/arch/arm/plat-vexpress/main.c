@@ -9,8 +9,6 @@
 #include <drivers/gic.h>
 #include <drivers/hfic.h>
 #include <drivers/pl011.h>
-#include <drivers/tpm2_mmio.h>
-#include <drivers/tpm2_ptp_fifo.h>
 #include <drivers/tzc400.h>
 #include <initcall.h>
 #include <keep.h>
@@ -29,14 +27,9 @@
 #include <string.h>
 #include <trace.h>
 
-static struct gic_data gic_data __maybe_unused __nex_bss;
-static struct hfic_data hfic_data __maybe_unused __nex_bss;
 static struct pl011_data console_data __nex_bss;
 
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, CONSOLE_UART_BASE, PL011_REG_SIZE);
-#if defined(CFG_DRIVERS_TPM2_MMIO)
-register_phys_mem_pgdir(MEM_AREA_IO_SEC, TPM2_BASE, TPM2_REG_SIZE);
-#endif
 #if defined(PLATFORM_FLAVOR_fvp)
 register_phys_mem(MEM_AREA_RAM_SEC, TZCDRAM_BASE, TZCDRAM_SIZE);
 #endif
@@ -54,41 +47,23 @@ register_ddr(DRAM1_BASE, DRAM1_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, GICD_BASE, GIC_DIST_REG_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, GICC_BASE, GIC_DIST_REG_SIZE);
 
-void main_init_gic(void)
+void boot_primary_init_intc(void)
 {
-#if defined(CFG_WITH_ARM_TRUSTED_FW)
-	/* On ARMv8, GIC configuration is initialized in ARM-TF */
-	gic_init_base_addr(&gic_data, GIC_BASE + GICC_OFFSET,
-			   GIC_BASE + GICD_OFFSET);
-#else
-	gic_init(&gic_data, GIC_BASE + GICC_OFFSET, GIC_BASE + GICD_OFFSET);
-#endif
-	itr_init(&gic_data.chip);
+	gic_init(GIC_BASE + GICC_OFFSET, GIC_BASE + GICD_OFFSET);
 }
 
 #if !defined(CFG_WITH_ARM_TRUSTED_FW)
-void main_secondary_init_gic(void)
+void boot_secondary_init_intc(void)
 {
-	gic_cpu_init(&gic_data);
+	gic_cpu_init();
 }
 #endif
-
-void itr_core_handler(void)
-{
-	gic_it_handle(&gic_data);
-}
 #endif /*CFG_GIC*/
 
 #ifdef CFG_CORE_HAFNIUM_INTC
-void main_init_gic(void)
+void boot_primary_init_intc(void)
 {
-	hfic_init(&hfic_data);
-	itr_init(&hfic_data.chip);
-}
-
-void itr_core_handler(void)
-{
-	hfic_it_handle(&hfic_data);
+	hfic_init();
 }
 #endif
 
@@ -187,24 +162,6 @@ static TEE_Result init_console_itr(void)
 }
 driver_init(init_console_itr);
 #endif
-
-#if defined(CFG_DRIVERS_TPM2_MMIO)
-static TEE_Result init_tpm2(void)
-{
-	enum tpm2_result res = TPM2_OK;
-
-	res = tpm2_mmio_init(TPM2_BASE);
-	if (res) {
-		EMSG("Failed to initialize TPM2 MMIO");
-		return TEE_ERROR_GENERIC;
-	}
-
-	DMSG("TPM2 Chip initialized");
-
-	return TEE_SUCCESS;
-}
-driver_init(init_tpm2);
-#endif /* defined(CFG_DRIVERS_TPM2_MMIO) */
 
 #ifdef CFG_TZC400
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, TZC400_BASE, TZC400_REG_SIZE);

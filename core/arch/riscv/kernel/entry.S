@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
+ * Copyright (c) 2023 Andes Technology Corporation
  * Copyright 2022-2023 NXP
  */
 
 #include <asm.S>
 #include <generated/asm-defines.h>
 #include <keep.h>
+#include <kernel/thread_private.h>
 #include <mm/core_mmu.h>
 #include <platform_config.h>
 #include <riscv.h>
@@ -21,23 +23,27 @@
 	/*
 	 * Setup sp to point to the top of the tmp stack for the current CPU:
 	 * sp is assigned:
-	 * stack_tmp + cpu_id * stack_tmp_stride - STACK_TMP_GUARD
+	 * stack_tmp + (hartid + 1) * stack_tmp_stride - STACK_TMP_GUARD
 	 */
 .macro set_sp
 	/* Unsupported CPU, park it before it breaks something */
 	li	t1, CFG_TEE_CORE_NB_CORE
 	csrr	t0, CSR_XSCRATCH
 	bge	t0, t1, unhandled_cpu
-	la	t2, stack_tmp
+	addi	t0, t0, 1
 	lw	t1, stack_tmp_stride
 	/*
-	 * t0 is core pos + 1
-	 * t1 is value of stack_tmp_stride
-	 * t2 is value of stack_tmp
+	 * t0 = (hartid + 1)
+	 * t1 = value of stack_tmp_stride
+	 * value of stack_tmp_rel = stack_tmp - stack_tmp_rel - STACK_TMP_GUARD
+	 * sp = stack_tmp + (hartid + 1) * stack_tmp_stride - STACK_TMP_GUARD
+	 *    = stack_tmp_rel + (value of stack_tmp_rel) + (t0 * t1)
 	 */
-	mv	sp, t2
-	mul	t2, t1, t0
-	add	sp, sp, t2
+	mul	t1, t0, t1
+	la	t2, stack_tmp_rel
+	lw	t0, 0(t2)
+	add	t0, t0, t2
+	add	sp, t1, t0
 .endm
 
 .macro cpu_is_ready
@@ -118,6 +124,14 @@
 .endm
 
 FUNC _start , :
+	/*
+	 * Register usage:
+	 * a0	- if non-NULL holds the hart ID
+	 * a1	- if non-NULL holds the system DTB address
+	 *
+	 * CSR_XSCRATCH - saved a0
+	 * s1 - saved a1
+	 */
 .option push
 .option norelax
 	la	gp, __global_pointer$
@@ -126,6 +140,11 @@ FUNC _start , :
 	csrr	a0, CSR_MHARTID
 #endif
 	csrw	CSR_XSCRATCH, a0
+#if defined(CFG_DT_ADDR)
+	li	s1, CFG_DT_ADDR
+#else
+	mv	s1, a1		/* Save device tree address into s1 */
+#endif
 	bnez	a0, reset_secondary
 	jal	reset_primary
 	j	.
@@ -168,7 +187,32 @@ UNWIND(	.cantunwind)
 	set_satp
 
 	jal	boot_init_primary_early
+
+	/*
+	 * Before entering boot_init_primary_late(), we do these two steps:
+	 * 1. Save current sp to s2, and set sp as threads[0].stack_va_end
+	 * 2. Clear the flag which indicates usage of the temporary stack in the
+	 *    current hart's thread_core_local structure.
+	 */
+	mv	s2, sp
+	la	a0, threads
+	LDR	a0, THREAD_CTX_STACK_VA_END(a0)
+	mv	sp, a0
+	jal	thread_get_core_local
+	mv	s3, a0
+	STR	x0, THREAD_CORE_LOCAL_FLAGS(s3)
+
+	mv	a0, s1		/* s1 contains saved device tree address */
+	mv	a1, x0		/* unused */
 	jal	boot_init_primary_late
+
+	/*
+	 * After returning from boot_init_primary_late(), the flag and sp are
+	 * restored.
+	 */
+	li	a0, THREAD_CLF_TMP
+	STR	a0, THREAD_CORE_LOCAL_FLAGS(s3)
+	mv	sp, s2
 
 	cpu_is_ready
 	flush_cpu_semaphores

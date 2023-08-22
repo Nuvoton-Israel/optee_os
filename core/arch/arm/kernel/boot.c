@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 /*
- * Copyright (c) 2015-2022, Linaro Limited
+ * Copyright (c) 2015-2023, Linaro Limited
  * Copyright (c) 2023, Arm Limited
  */
 
@@ -12,11 +12,13 @@
 #include <crypto/crypto.h>
 #include <drivers/gic.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <ffa.h>
 #include <initcall.h>
 #include <inttypes.h>
 #include <keep.h>
 #include <kernel/asan.h>
 #include <kernel/boot.h>
+#include <kernel/dt.h>
 #include <kernel/linker.h>
 #include <kernel/misc.h>
 #include <kernel/panic.h>
@@ -77,14 +79,6 @@ DECLARE_KEEP_PAGER(sem_cpu_sync);
 #endif
 
 #ifdef CFG_DT
-struct dt_descriptor {
-	void *blob;
-#ifdef _CFG_USE_DTB_OVERLAY
-	int frag_id;
-#endif
-};
-
-static struct dt_descriptor external_dt __nex_bss;
 #ifdef CFG_CORE_SEL1_SPMC
 static struct dt_descriptor tos_fw_config_dt __nex_bss;
 #endif
@@ -101,12 +95,12 @@ __weak void plat_primary_init_early(void)
 DECLARE_KEEP_PAGER(plat_primary_init_early);
 
 /* May be overridden in plat-$(PLATFORM)/main.c */
-__weak void main_init_gic(void)
+__weak void boot_primary_init_intc(void)
 {
 }
 
 /* May be overridden in plat-$(PLATFORM)/main.c */
-__weak void main_secondary_init_gic(void)
+__weak void boot_secondary_init_intc(void)
 {
 }
 
@@ -118,12 +112,14 @@ __weak unsigned long plat_get_aslr_seed(void)
 	return 0;
 }
 
-#if defined(_CFG_CORE_STACK_PROTECTOR)
+#if defined(_CFG_CORE_STACK_PROTECTOR) || defined(CFG_WITH_STACK_CANARIES)
 /* Generate random stack canary value on boot up */
-__weak uintptr_t plat_get_random_stack_canary(void)
+__weak void plat_get_random_stack_canaries(void *buf, size_t ncan, size_t size)
 {
-	uintptr_t canary = 0xbaaaad00;
 	TEE_Result ret = TEE_ERROR_GENERIC;
+	size_t i = 0;
+
+	assert(buf && ncan && size);
 
 	/*
 	 * With virtualization the RNG is not initialized in Nexus core.
@@ -131,17 +127,20 @@ __weak uintptr_t plat_get_random_stack_canary(void)
 	 */
 	if (IS_ENABLED(CFG_NS_VIRTUALIZATION)) {
 		IMSG("WARNING: Using fixed value for stack canary");
-		return canary;
+		memset(buf, 0xab, ncan * size);
+		goto out;
 	}
 
-	ret = crypto_rng_read(&canary, sizeof(canary));
+	ret = crypto_rng_read(buf, ncan * size);
 	if (ret != TEE_SUCCESS)
 		panic("Failed to generate random stack canary");
 
+out:
 	/* Leave null byte in canary to prevent string base exploit */
-	return canary & ~0xffUL;
+	for (i = 0; i < ncan; i++)
+		*((uint8_t *)buf + size * i) = 0;
 }
-#endif /*_CFG_CORE_STACK_PROTECTOR*/
+#endif /* _CFG_CORE_STACK_PROTECTOR || CFG_WITH_STACK_CANARIES */
 
 /*
  * This function is called as a guard after each smc call which is not
@@ -623,154 +622,7 @@ static void init_runtime(unsigned long pageable_part __unused)
 }
 #endif
 
-void *get_dt(void)
-{
-	void *fdt = get_embedded_dt();
-
-	if (!fdt)
-		fdt = get_external_dt();
-
-	return fdt;
-}
-
-void *get_secure_dt(void)
-{
-	void *fdt = get_embedded_dt();
-
-	if (!fdt && IS_ENABLED(CFG_MAP_EXT_DT_SECURE))
-		fdt = get_external_dt();
-
-	return fdt;
-}
-
-#if defined(CFG_EMBED_DTB)
-void *get_embedded_dt(void)
-{
-	static bool checked;
-
-	assert(cpu_mmu_enabled());
-
-	if (!checked) {
-		IMSG("Embedded DTB found");
-
-		if (fdt_check_header(embedded_secure_dtb))
-			panic("Invalid embedded DTB");
-
-		checked = true;
-	}
-
-	return embedded_secure_dtb;
-}
-#else
-void *get_embedded_dt(void)
-{
-	return NULL;
-}
-#endif /*CFG_EMBED_DTB*/
-
 #if defined(CFG_DT)
-void *get_external_dt(void)
-{
-	if (!IS_ENABLED(CFG_EXTERNAL_DT))
-		return NULL;
-
-	assert(cpu_mmu_enabled());
-	return external_dt.blob;
-}
-
-static TEE_Result release_external_dt(void)
-{
-	int ret = 0;
-
-	if (!IS_ENABLED(CFG_EXTERNAL_DT))
-		return TEE_SUCCESS;
-
-	if (!external_dt.blob)
-		return TEE_SUCCESS;
-
-	ret = fdt_pack(external_dt.blob);
-	if (ret < 0) {
-		EMSG("Failed to pack Device Tree at 0x%" PRIxPA ": error %d",
-		     virt_to_phys(external_dt.blob), ret);
-		panic();
-	}
-
-	if (core_mmu_remove_mapping(MEM_AREA_EXT_DT, external_dt.blob,
-				    CFG_DTB_MAX_SIZE))
-		panic("Failed to remove temporary Device Tree mapping");
-
-	/* External DTB no more reached, reset pointer to invalid */
-	external_dt.blob = NULL;
-
-	return TEE_SUCCESS;
-}
-boot_final(release_external_dt);
-
-#ifdef _CFG_USE_DTB_OVERLAY
-static int add_dt_overlay_fragment(struct dt_descriptor *dt, int ioffs)
-{
-	char frag[32];
-	int offs;
-	int ret;
-
-	snprintf(frag, sizeof(frag), "fragment@%d", dt->frag_id);
-	offs = fdt_add_subnode(dt->blob, ioffs, frag);
-	if (offs < 0)
-		return offs;
-
-	dt->frag_id += 1;
-
-	ret = fdt_setprop_string(dt->blob, offs, "target-path", "/");
-	if (ret < 0)
-		return -1;
-
-	return fdt_add_subnode(dt->blob, offs, "__overlay__");
-}
-
-static int init_dt_overlay(struct dt_descriptor *dt, int __maybe_unused dt_size)
-{
-	int fragment;
-
-	if (IS_ENABLED(CFG_EXTERNAL_DTB_OVERLAY)) {
-		if (!fdt_check_header(dt->blob)) {
-			fdt_for_each_subnode(fragment, dt->blob, 0)
-				dt->frag_id += 1;
-			return 0;
-		}
-	}
-
-	return fdt_create_empty_tree(dt->blob, dt_size);
-}
-#else
-static int add_dt_overlay_fragment(struct dt_descriptor *dt __unused, int offs)
-{
-	return offs;
-}
-
-static int init_dt_overlay(struct dt_descriptor *dt __unused,
-			   int dt_size __unused)
-{
-	return 0;
-}
-#endif /* _CFG_USE_DTB_OVERLAY */
-
-static int add_dt_path_subnode(struct dt_descriptor *dt, const char *path,
-			       const char *subnode)
-{
-	int offs;
-
-	offs = fdt_path_offset(dt->blob, path);
-	if (offs < 0)
-		return -1;
-	offs = add_dt_overlay_fragment(dt, offs);
-	if (offs < 0)
-		return -1;
-	offs = fdt_add_subnode(dt->blob, offs, subnode);
-	if (offs < 0)
-		return -1;
-	return offs;
-}
-
 static int add_optee_dt_node(struct dt_descriptor *dt)
 {
 	int offs;
@@ -947,87 +799,6 @@ static int config_psci(struct dt_descriptor *dt __unused)
 }
 #endif /*CFG_PSCI_ARM32*/
 
-static void set_dt_val(void *data, uint32_t cell_size, uint64_t val)
-{
-	if (cell_size == 1) {
-		fdt32_t v = cpu_to_fdt32((uint32_t)val);
-
-		memcpy(data, &v, sizeof(v));
-	} else {
-		fdt64_t v = cpu_to_fdt64(val);
-
-		memcpy(data, &v, sizeof(v));
-	}
-}
-
-static int add_res_mem_dt_node(struct dt_descriptor *dt, const char *name,
-			       paddr_t pa, size_t size)
-{
-	int offs = 0;
-	int ret = 0;
-	int addr_size = -1;
-	int len_size = -1;
-	bool found = true;
-	char subnode_name[80] = { 0 };
-
-	offs = fdt_path_offset(dt->blob, "/reserved-memory");
-
-	if (offs < 0) {
-		found = false;
-		offs = 0;
-	}
-
-	if (IS_ENABLED2(_CFG_USE_DTB_OVERLAY)) {
-		len_size = sizeof(paddr_t) / sizeof(uint32_t);
-		addr_size = sizeof(paddr_t) / sizeof(uint32_t);
-	} else {
-		len_size = fdt_size_cells(dt->blob, offs);
-		if (len_size < 0)
-			return -1;
-		addr_size = fdt_address_cells(dt->blob, offs);
-		if (addr_size < 0)
-			return -1;
-	}
-
-	if (!found) {
-		offs = add_dt_path_subnode(dt, "/", "reserved-memory");
-		if (offs < 0)
-			return -1;
-		ret = fdt_setprop_cell(dt->blob, offs, "#address-cells",
-				       addr_size);
-		if (ret < 0)
-			return -1;
-		ret = fdt_setprop_cell(dt->blob, offs, "#size-cells", len_size);
-		if (ret < 0)
-			return -1;
-		ret = fdt_setprop(dt->blob, offs, "ranges", NULL, 0);
-		if (ret < 0)
-			return -1;
-	}
-
-	ret = snprintf(subnode_name, sizeof(subnode_name),
-		       "%s@%" PRIxPA, name, pa);
-	if (ret < 0 || ret >= (int)sizeof(subnode_name))
-		DMSG("truncated node \"%s@%" PRIxPA"\"", name, pa);
-	offs = fdt_add_subnode(dt->blob, offs, subnode_name);
-	if (offs >= 0) {
-		uint32_t data[FDT_MAX_NCELLS * 2];
-
-		set_dt_val(data, addr_size, pa);
-		set_dt_val(data + addr_size, len_size, size);
-		ret = fdt_setprop(dt->blob, offs, "reg", data,
-				  sizeof(uint32_t) * (addr_size + len_size));
-		if (ret < 0)
-			return -1;
-		ret = fdt_setprop(dt->blob, offs, "no-map", NULL, 0);
-		if (ret < 0)
-			return -1;
-	} else {
-		return -1;
-	}
-	return 0;
-}
-
 #ifdef CFG_CORE_DYN_SHM
 static uint64_t get_dt_val_and_advance(const void *data, size_t *offs,
 				       uint32_t cell_size)
@@ -1155,50 +926,6 @@ static int mark_static_shm_as_reserved(struct dt_descriptor *dt)
 }
 #endif /*CFG_CORE_RESERVED_SHM*/
 
-static void init_external_dt(unsigned long phys_dt)
-{
-	struct dt_descriptor *dt = &external_dt;
-	void *fdt;
-	int ret;
-
-	if (!IS_ENABLED(CFG_EXTERNAL_DT))
-		return;
-
-	if (!phys_dt) {
-		/*
-		 * No need to panic as we're not using the DT in OP-TEE
-		 * yet, we're only adding some nodes for normal world use.
-		 * This makes the switch to using DT easier as we can boot
-		 * a newer OP-TEE with older boot loaders. Once we start to
-		 * initialize devices based on DT we'll likely panic
-		 * instead of returning here.
-		 */
-		IMSG("No non-secure external DT");
-		return;
-	}
-
-	fdt = core_mmu_add_mapping(MEM_AREA_EXT_DT, phys_dt, CFG_DTB_MAX_SIZE);
-	if (!fdt)
-		panic("Failed to map external DTB");
-
-	dt->blob = fdt;
-
-	ret = init_dt_overlay(dt, CFG_DTB_MAX_SIZE);
-	if (ret < 0) {
-		EMSG("Device Tree Overlay init fail @ %#lx: error %d", phys_dt,
-		     ret);
-		panic();
-	}
-
-	ret = fdt_open_into(fdt, fdt, CFG_DTB_MAX_SIZE);
-	if (ret < 0) {
-		EMSG("Invalid Device Tree at %#lx: error %d", phys_dt, ret);
-		panic();
-	}
-
-	IMSG("Non-secure external DT found");
-}
-
 static int mark_tzdram_as_reserved(struct dt_descriptor *dt)
 {
 	return add_res_mem_dt_node(dt, "optee_core", CFG_TZDRAM_START,
@@ -1207,12 +934,9 @@ static int mark_tzdram_as_reserved(struct dt_descriptor *dt)
 
 static void update_external_dt(void)
 {
-	struct dt_descriptor *dt = &external_dt;
+	struct dt_descriptor *dt = get_external_dt_desc();
 
-	if (!IS_ENABLED(CFG_EXTERNAL_DT))
-		return;
-
-	if (!dt->blob)
+	if (!dt || !dt->blob)
 		return;
 
 	if (!IS_ENABLED(CFG_CORE_FFA) && add_optee_dt_node(dt))
@@ -1230,15 +954,6 @@ static void update_external_dt(void)
 		panic("Failed to config secure memory");
 }
 #else /*CFG_DT*/
-void *get_external_dt(void)
-{
-	return NULL;
-}
-
-static void init_external_dt(unsigned long phys_dt __unused)
-{
-}
-
 static void update_external_dt(void)
 {
 }
@@ -1383,6 +1098,16 @@ void init_tee_runtime(void)
 	 */
 	thread_init_core_local_pauth_keys();
 	thread_init_thread_pauth_keys();
+
+	/*
+	 * Reinitialize canaries around the stacks with crypto_rng_read().
+	 *
+	 * TODO: Updating canaries when CFG_NS_VIRTUALIZATION is enabled will
+	 * require synchronization between thread_check_canaries() and
+	 * thread_update_canaries().
+	 */
+	if (!IS_ENABLED(CFG_NS_VIRTUALIZATION))
+		thread_update_canaries();
 }
 
 static void init_primary(unsigned long pageable_part, unsigned long nsec_entry)
@@ -1474,7 +1199,7 @@ void __weak boot_init_primary_late(unsigned long fdt,
 			IMSG("WARNING: This ARM core does not have NMFI enabled, no need for workaround");
 	}
 
-	main_init_gic();
+	boot_primary_init_intc();
 	init_vfp_nsec();
 	if (IS_ENABLED(CFG_NS_VIRTUALIZATION)) {
 		IMSG("Initializing virtualization support");
@@ -1502,7 +1227,7 @@ static void init_secondary_helper(unsigned long nsec_entry)
 	secondary_init_cntfrq();
 	thread_init_per_cpu();
 	init_sec_mon(nsec_entry);
-	main_secondary_init_gic();
+	boot_secondary_init_intc();
 	init_vfp_sec();
 	init_vfp_nsec();
 
@@ -1625,3 +1350,91 @@ unsigned long __weak get_aslr_seed(void *fdt __unused)
 }
 #endif /*!CFG_DT*/
 #endif /*CFG_CORE_ASLR*/
+
+#if defined(CFG_CORE_SEL2_SPMC) && defined(CFG_CORE_PHYS_RELOCATABLE)
+static void *get_fdt_from_boot_info(struct ffa_boot_info_header_1_1 *hdr)
+{
+	struct ffa_boot_info_1_1 *desc = NULL;
+	uint8_t content_fmt = 0;
+	uint8_t name_fmt = 0;
+	void *fdt = NULL;
+	int ret = 0;
+
+	if (hdr->signature != FFA_BOOT_INFO_SIGNATURE) {
+		EMSG("Bad boot info signature %#"PRIx32, hdr->signature);
+		panic();
+	}
+	if (hdr->version != FFA_BOOT_INFO_VERSION) {
+		EMSG("Bad boot info version %#"PRIx32, hdr->version);
+		panic();
+	}
+	if (hdr->desc_count != 1) {
+		EMSG("Bad boot info descriptor count %#"PRIx32,
+		     hdr->desc_count);
+		panic();
+	}
+	desc = (void *)((vaddr_t)hdr + hdr->desc_offset);
+	name_fmt = desc->flags & FFA_BOOT_INFO_FLAG_NAME_FORMAT_MASK;
+	if (name_fmt == FFA_BOOT_INFO_FLAG_NAME_FORMAT_STRING)
+		DMSG("Boot info descriptor name \"%16s\"", desc->name);
+	else if (name_fmt == FFA_BOOT_INFO_FLAG_NAME_FORMAT_UUID)
+		DMSG("Boot info descriptor UUID %pUl", (void *)desc->name);
+	else
+		DMSG("Boot info descriptor: unknown name format %"PRIu8,
+		     name_fmt);
+
+	content_fmt = (desc->flags & FFA_BOOT_INFO_FLAG_CONTENT_FORMAT_MASK) >>
+		      FFA_BOOT_INFO_FLAG_CONTENT_FORMAT_SHIFT;
+	if (content_fmt != FFA_BOOT_INFO_FLAG_CONTENT_FORMAT_ADDR) {
+		EMSG("Bad boot info content format %"PRIu8", expected %u (address)",
+		     content_fmt, FFA_BOOT_INFO_FLAG_CONTENT_FORMAT_ADDR);
+		panic();
+	}
+
+	fdt = (void *)(vaddr_t)desc->contents;
+	ret = fdt_check_full(fdt, desc->size);
+	if (ret < 0) {
+		EMSG("Invalid Device Tree at %p: error %d", fdt, ret);
+		panic();
+	}
+	return fdt;
+}
+
+static void get_sec_mem_from_manifest(void *fdt, paddr_t *base, size_t *size)
+{
+	int ret = 0;
+	uint64_t num = 0;
+
+	ret = fdt_node_check_compatible(fdt, 0, "arm,ffa-manifest-1.0");
+	if (ret < 0) {
+		EMSG("Invalid FF-A manifest at %p: error %d", fdt, ret);
+		panic();
+	}
+	ret = dt_getprop_as_number(fdt, 0, "load-address", &num);
+	if (ret < 0) {
+		EMSG("Can't read \"load-address\" from FF-A manifest at %p: error %d",
+		     fdt, ret);
+		panic();
+	}
+	*base = num;
+	/* "mem-size" is currently an undocumented extension to the spec. */
+	ret = dt_getprop_as_number(fdt, 0, "mem-size", &num);
+	if (ret < 0) {
+		EMSG("Can't read \"mem-size\" from FF-A manifest at %p: error %d",
+		     fdt, ret);
+		panic();
+	}
+	*size = num;
+}
+
+void __weak boot_save_boot_info(void *boot_info)
+{
+	void *fdt = NULL;
+	paddr_t base = 0;
+	size_t size = 0;
+
+	fdt = get_fdt_from_boot_info(boot_info);
+	get_sec_mem_from_manifest(fdt, &base, &size);
+	core_mmu_set_secure_memory(base, size);
+}
+#endif /*CFG_CORE_SEL2_SPMC && CFG_CORE_PHYS_RELOCATABLE*/
