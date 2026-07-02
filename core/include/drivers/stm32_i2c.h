@@ -3,15 +3,19 @@
  * Copyright (c) 2017-2023, STMicroelectronics
  */
 
-#ifndef DRIVERS_STM32_I2C_H
-#define DRIVERS_STM32_I2C_H
+#ifndef __DRIVERS_STM32_I2C_H
+#define __DRIVERS_STM32_I2C_H
 
 #include <drivers/clk.h>
+#include <drivers/i2c.h>
 #include <drivers/pinctrl.h>
 #include <kernel/dt.h>
+#include <kernel/dt_driver.h>
+#include <kernel/mutex_pm_aware.h>
 #include <mm/core_memprot.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/queue.h>
 #include <util.h>
 #include <types_ext.h>
 
@@ -27,10 +31,8 @@
 #define I2C_FAST_PLUS_RATE	U(1000000)
 
 /*
- * Initialization configuration structure for the STM32 I2C bus.
- * Refer to the SoC Reference Manual for more details on configuration items.
+ * struct stm32_i2c_init_s - STM32 I2C configuration data
  *
- * @dt_status: non-secure/secure status read from DT
  * @pbase: I2C interface base address
  * @reg_size: I2C interface register map size
  * @clock: I2C bus/interface clock
@@ -48,7 +50,6 @@
  * @digital_filter_coef: filter coef (below STM32_I2C_DIGITAL_FILTER_MAX)
  */
 struct stm32_i2c_init_s {
-	unsigned int dt_status;
 	paddr_t pbase;
 	size_t reg_size;
 	struct clk *clock;
@@ -67,8 +68,8 @@ struct stm32_i2c_init_s {
 };
 
 enum i2c_state_e {
-	I2C_STATE_RESET,		/* Not yet initialized */
-	I2C_STATE_READY,		/* Ready for use */
+	I2C_STATE_RESET,	/* Not yet initialized */
+	I2C_STATE_READY,	/* Ready for use */
 	I2C_STATE_BUSY,		/* Internal process ongoing */
 	I2C_STATE_BUSY_TX,	/* Data Transmission ongoing */
 	I2C_STATE_BUSY_RX,	/* Data Reception ongoing */
@@ -77,7 +78,7 @@ enum i2c_state_e {
 
 enum i2c_mode_e {
 	I2C_MODE_NONE,		/* No active communication */
-	I2C_MODE_MASTER,		/* Communication in Master Mode */
+	I2C_MODE_MASTER,	/* Communication in Master Mode */
 	I2C_MODE_SLAVE,		/* Communication in Slave Mode */
 	I2C_MODE_MEM,		/* Communication in Memory Mode */
 };
@@ -101,10 +102,27 @@ struct i2c_cfg {
 };
 
 /*
+ * struct stm32_itr_dep - Interrupts requesting atomic access
+ *
+ * @chip: Interrupt chip reference
+ * @num: Target tnterrupt number in @chip context
+ * @link: Link in registered consumer list
+ *
+ * Consumer requesting interrupt accesses to the I2C bus
+ * while executing in interrupt context, to handle external
+ * device events before a thread context like the bottom
+ * half is ready.
+ */
+struct stm32_itr_dep {
+	struct itr_chip *chip;
+	size_t num;
+	SLIST_ENTRY(stm32_itr_dep) link;
+};
+
+/*
  * I2C bus device
  * @base: I2C SoC registers base address
  * @reg_size: I2C SoC registers address map size
- * @dt_status: non-secure/secure status read from DT
  * @clock: clock ID
  * @i2c_state: Driver state ID I2C_STATE_*
  * @i2c_err: Last error code I2C_ERROR_*
@@ -113,11 +131,15 @@ struct i2c_cfg {
  * @sec_cfg: I2C registers configuration storage
  * @pinctrl: Pin control configuration for the I2C bus in active state
  * @pinctrl_sleep: Pin control configuration for the I2C bus in standby state
+ * @mu: Protection on concurrent access to the I2C bus considering PM context
+ * @i2c_secure: Indicates that the I2C is secure
+ * @consumer_itr_lock: 1 when an interrupt handler accesses the bus, 0 if not
+ * @consumer_itr_head: List head of interrupts registered for interrupt accesses
+ * @consumer_itr_masked: True if consumer interrupts were masked
  */
 struct i2c_handle_s {
 	struct io_pa_va base;
 	size_t reg_size;
-	unsigned int dt_status;
 	struct clk *clock;
 	enum i2c_state_e i2c_state;
 	uint32_t i2c_err;
@@ -126,6 +148,23 @@ struct i2c_handle_s {
 	struct i2c_cfg sec_cfg;
 	struct pinctrl_state *pinctrl;
 	struct pinctrl_state *pinctrl_sleep;
+	struct mutex_pm_aware mu;
+	bool i2c_secure;
+	int consumer_itr_lock;
+	SLIST_HEAD(, stm32_itr_dep) consumer_itr_head;
+	bool consumer_itr_masked;
+};
+
+/*
+ * struct stm32_i2c_dev - Bus consumer device over an STM32 I2C bus
+ * @i2c_dev: I2C consumer instance
+ * @i2c_ctrl: I2C bus control operation
+ * @handle: Handle on a single STM32 I2C bus interface
+ */
+struct stm32_i2c_dev {
+	struct i2c_dev i2c_dev;
+	struct i2c_ctrl i2c_ctrl;
+	struct i2c_handle_s *handle;
 };
 
 /* STM32 specific defines */
@@ -262,7 +301,21 @@ void stm32_i2c_resume(struct i2c_handle_s *hi2c);
  */
 static inline bool i2c_is_secure(struct i2c_handle_s *hi2c)
 {
-	return hi2c->dt_status == DT_STATUS_OK_SEC;
+	return hi2c->i2c_secure;
 }
 
-#endif /* DRIVERS_STM32_I2C_H*/
+/*
+ * Register interrupt for possible I2C bus accesses in interrupt context
+ *
+ * @hi2c: STM32 I2C handle of the bus
+ * @itr_chip: Interrupt chip for the interrupt context access
+ * @itr_num: Interrupt number in @itr_chip for the access
+ *
+ * Register an interrupt (chip and number) for which I2C accesses
+ * must be handled from the interrupt when non-secure world has not
+ * registered for thread execution as the bottom half.
+ */
+void stm32_i2c_interrupt_access_lockdeps(struct i2c_handle_s *hi2c,
+					 struct itr_chip *itr_chip,
+					 size_t itr_num);
+#endif /* __DRIVERS_STM32_I2C_H*/

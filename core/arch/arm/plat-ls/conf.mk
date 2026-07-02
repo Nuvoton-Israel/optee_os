@@ -8,6 +8,11 @@ $(call force,CFG_LS,y)
 $(call force,CFG_DRAM0_BASE,0x80000000)
 $(call force,CFG_TEE_OS_DRAM0_SIZE,0x4000000)
 
+CFG_ENABLE_EMBEDDED_TESTS ?= y
+CFG_PKCS11_TA ?= y
+
+CFG_CORE_HEAP_SIZE ?= 131072
+
 ifeq ($(PLATFORM_FLAVOR),ls1012ardb)
 include core/arch/arm/cpu/cortex-armv8-0.mk
 $(call force,CFG_TEE_CORE_NB_CORE,1)
@@ -60,7 +65,7 @@ $(call force,CFG_DRAM1_SIZE,0x1F80000000)
 $(call force,CFG_CORE_CLUSTER_SHIFT,1)
 $(call force,CFG_ARM_GICV3,y)
 $(call force,CFG_PL011,y)
-$(call force,CFG_CORE_ARM64_PA_BITS,48)
+$(call force,CFG_CORE_ARM64_PA_BITS,40)
 $(call force,CFG_EMBED_DTB,y)
 $(call force,CFG_EMBED_DTB_SOURCE_FILE,fsl-lx2160a-qds.dts)
 CFG_LS_I2C ?= y
@@ -78,7 +83,7 @@ $(call force,CFG_DRAM1_SIZE,0x1F80000000)
 $(call force,CFG_CORE_CLUSTER_SHIFT,1)
 $(call force,CFG_ARM_GICV3,y)
 $(call force,CFG_PL011,y)
-$(call force,CFG_CORE_ARM64_PA_BITS,48)
+$(call force,CFG_CORE_ARM64_PA_BITS,40)
 $(call force,CFG_EMBED_DTB,y)
 $(call force,CFG_EMBED_DTB_SOURCE_FILE,fsl-lx2160a-rdb.dts)
 CFG_LS_I2C ?= y

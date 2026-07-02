@@ -51,7 +51,7 @@ TEE_Result copy_from_user(void *kaddr, const void *uaddr, size_t len)
 
 	uaddr = memtag_strip_tag_const(uaddr);
 	res = check_user_access(flags, uaddr, len);
-	if (!res) {
+	if (!res && kaddr && uaddr) {
 		enter_user_access();
 		memcpy(kaddr, uaddr, len);
 		exit_user_access();
@@ -67,7 +67,7 @@ TEE_Result copy_to_user(void *uaddr, const void *kaddr, size_t len)
 
 	uaddr = memtag_strip_tag(uaddr);
 	res = check_user_access(flags, uaddr, len);
-	if (!res) {
+	if (!res && kaddr && uaddr) {
 		enter_user_access();
 		memcpy(uaddr, kaddr, len);
 		exit_user_access();
@@ -83,7 +83,7 @@ TEE_Result copy_from_user_private(void *kaddr, const void *uaddr, size_t len)
 
 	uaddr = memtag_strip_tag_const(uaddr);
 	res = check_user_access(flags, uaddr, len);
-	if (!res) {
+	if (!res && kaddr && uaddr) {
 		enter_user_access();
 		memcpy(kaddr, uaddr, len);
 		exit_user_access();
@@ -99,13 +99,32 @@ TEE_Result copy_to_user_private(void *uaddr, const void *kaddr, size_t len)
 
 	uaddr = memtag_strip_tag(uaddr);
 	res = check_user_access(flags, uaddr, len);
-	if (!res) {
+	if (!res && kaddr && uaddr) {
 		enter_user_access();
 		memcpy(uaddr, kaddr, len);
 		exit_user_access();
 	}
 
 	return res;
+}
+
+static void *maybe_tag_bb(void *buf, size_t sz)
+{
+	static_assert(MEMTAG_GRANULE_SIZE <= BB_ALIGNMENT);
+
+	if (!MEMTAG_IS_ENABLED)
+		return buf;
+
+	assert(!((vaddr_t)buf % MEMTAG_GRANULE_SIZE));
+	return memtag_set_random_tags(buf, ROUNDUP(sz, MEMTAG_GRANULE_SIZE));
+}
+
+static void maybe_untag_bb(void *buf, size_t sz)
+{
+	if (MEMTAG_IS_ENABLED) {
+		assert(!((vaddr_t)buf % MEMTAG_GRANULE_SIZE));
+		memtag_set_tags(buf, ROUNDUP(sz, MEMTAG_GRANULE_SIZE), 0);
+	}
 }
 
 void *bb_alloc(size_t len)
@@ -116,7 +135,7 @@ void *bb_alloc(size_t len)
 
 	if (uctx && !ADD_OVERFLOW(uctx->bbuf_offs, len, &offs) &&
 	    offs <= uctx->bbuf_size) {
-		bb = uctx->bbuf + uctx->bbuf_offs;
+		bb = maybe_tag_bb(uctx->bbuf + uctx->bbuf_offs, len);
 		uctx->bbuf_offs = ROUNDUP(offs, BB_ALIGNMENT);
 	}
 	return bb;
@@ -129,6 +148,12 @@ static void bb_free_helper(struct user_mode_ctx *uctx, vaddr_t bb, size_t len)
 	if (bb >= bbuf && IS_ALIGNED(bb, BB_ALIGNMENT)) {
 		size_t prev_offs = bb - bbuf;
 
+		/*
+		 * Even if we can't update offset we can still invalidate
+		 * the memory allocation.
+		 */
+		maybe_untag_bb((void *)bb, len);
+
 		if (prev_offs + ROUNDUP(len, BB_ALIGNMENT) == uctx->bbuf_offs)
 			uctx->bbuf_offs = prev_offs;
 	}
@@ -139,15 +164,29 @@ void bb_free(void *bb, size_t len)
 	struct user_mode_ctx *uctx = get_current_uctx();
 
 	if (uctx)
-		bb_free_helper(uctx, (vaddr_t)bb, len);
+		bb_free_helper(uctx, memtag_strip_tag_vaddr(bb), len);
+}
+
+void bb_free_wipe(void *bb, size_t len)
+{
+	if (bb)
+		memset(bb, 0, len);
+	bb_free(bb, len);
 }
 
 void bb_reset(void)
 {
 	struct user_mode_ctx *uctx = get_current_uctx();
 
-	if (uctx)
+	if (uctx) {
+		/*
+		 * Only the part up to the offset have been allocated, so
+		 * no need to clear tags beyond that.
+		 */
+		maybe_untag_bb(uctx->bbuf, uctx->bbuf_offs);
+
 		uctx->bbuf_offs = 0;
+	}
 }
 
 TEE_Result clear_user(void *uaddr, size_t n)
@@ -173,6 +212,9 @@ size_t strnlen_user(const void *uaddr, size_t len)
 	TEE_Result res = TEE_SUCCESS;
 	size_t n = 0;
 
+	if (!len)
+		return 0;
+
 	uaddr = memtag_strip_tag_const(uaddr);
 	res = check_user_access(flags, uaddr, len);
 	if (!res) {
@@ -184,7 +226,10 @@ size_t strnlen_user(const void *uaddr, size_t len)
 	return n;
 }
 
-TEE_Result bb_memdup_user(const void *src, size_t len, void **p)
+static TEE_Result __bb_memdup_user(TEE_Result (*copy_func)(void *uaddr,
+							   const void *kaddr,
+							   size_t len),
+				   const void *src, size_t len, void **p)
 {
 	TEE_Result res = TEE_SUCCESS;
 	void *buf = NULL;
@@ -193,7 +238,9 @@ TEE_Result bb_memdup_user(const void *src, size_t len, void **p)
 	if (!buf)
 		return TEE_ERROR_OUT_OF_MEMORY;
 
-	res = copy_from_user(buf, src, len);
+	if (len)
+		res = copy_func(buf, src, len);
+
 	if (res)
 		bb_free(buf, len);
 	else
@@ -202,22 +249,14 @@ TEE_Result bb_memdup_user(const void *src, size_t len, void **p)
 	return res;
 }
 
+TEE_Result bb_memdup_user(const void *src, size_t len, void **p)
+{
+	return __bb_memdup_user(copy_from_user, src, len, p);
+}
+
 TEE_Result bb_memdup_user_private(const void *src, size_t len, void **p)
 {
-	TEE_Result res = TEE_SUCCESS;
-	void *buf = NULL;
-
-	buf = bb_alloc(len);
-	if (!buf)
-		return TEE_ERROR_OUT_OF_MEMORY;
-
-	res = copy_from_user_private(buf, src, len);
-	if (res)
-		bb_free(buf, len);
-	else
-		*p = buf;
-
-	return res;
+	return __bb_memdup_user(copy_from_user_private, src, len, p);
 }
 
 TEE_Result bb_strndup_user(const char *src, size_t maxlen, char **dst,
@@ -229,21 +268,25 @@ TEE_Result bb_strndup_user(const char *src, size_t maxlen, char **dst,
 	char *d = NULL;
 
 	src = memtag_strip_tag_const(src);
-	res = check_user_access(flags, src, maxlen);
-	if (res)
-		return res;
+	if (maxlen) {
+		res = check_user_access(flags, src, maxlen);
+		if (res)
+			return res;
 
-	enter_user_access();
-	l = strnlen(src, maxlen);
-	exit_user_access();
+		enter_user_access();
+		l = strnlen(src, maxlen);
+		exit_user_access();
+	}
 
 	d = bb_alloc(l + 1);
 	if (!d)
 		return TEE_ERROR_OUT_OF_MEMORY;
 
-	enter_user_access();
-	memcpy(d, src, l);
-	exit_user_access();
+	if (l && src && d) {
+		enter_user_access();
+		memcpy(d, src, l);
+		exit_user_access();
+	}
 
 	d[l] = 0;
 
@@ -267,7 +310,7 @@ uint32_t kaddr_to_uref(void *kaddr)
 
 		uref -= VCORE_START_VA;
 		assert(uref < (UINT32_MAX >> MEMTAG_TAG_WIDTH));
-		uref |= memtag_get_tag(kaddr) << uref_tag_shift;
+		uref |= (vaddr_t)memtag_get_tag(kaddr) << uref_tag_shift;
 		return uref;
 	}
 

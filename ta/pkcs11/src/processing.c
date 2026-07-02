@@ -104,15 +104,22 @@ void release_active_processing(struct pkcs11_session *session)
 	if (!session->processing)
 		return;
 
-	if (session->processing->tee_hash_op_handle != TEE_HANDLE_NULL) {
-		TEE_FreeOperation(session->processing->tee_hash_op_handle);
-		session->processing->tee_hash_op_handle = TEE_HANDLE_NULL;
-		session->processing->tee_hash_algo = 0;
+	switch (session->processing->mecha_type) {
+	case PKCS11_CKM_AES_GCM:
+		tee_release_gcm_operation(session);
+		break;
+	default:
+		break;
 	}
 
 	if (session->processing->tee_op_handle != TEE_HANDLE_NULL) {
 		TEE_FreeOperation(session->processing->tee_op_handle);
 		session->processing->tee_op_handle = TEE_HANDLE_NULL;
+	}
+
+	if (session->processing->tee_op_handle2 != TEE_HANDLE_NULL) {
+		TEE_FreeOperation(session->processing->tee_op_handle2);
+		session->processing->tee_op_handle2 = TEE_HANDLE_NULL;
 	}
 
 	TEE_Free(session->processing->extra_ctx);
@@ -166,10 +173,10 @@ size_t get_object_key_bit_size(struct pkcs11_object *obj)
 static enum pkcs11_rc generate_random_key_value(struct obj_attrs **head)
 {
 	enum pkcs11_rc rc = PKCS11_CKR_GENERAL_ERROR;
-	void *data = NULL;
 	uint32_t data_size = 0;
 	uint32_t value_len = 0;
 	void *value = NULL;
+	void *data = NULL;
 
 	if (!*head)
 		return PKCS11_CKR_TEMPLATE_INCONSISTENT;
@@ -195,6 +202,9 @@ static enum pkcs11_rc generate_random_key_value(struct obj_attrs **head)
 	TEE_GenerateRandom(value, value_len);
 
 	rc = add_attribute(head, PKCS11_CKA_VALUE, value, value_len);
+
+	if (rc == PKCS11_CKR_OK)
+		rc = set_check_value_attr(head);
 
 	TEE_Free(value);
 

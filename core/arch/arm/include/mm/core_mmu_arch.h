@@ -3,8 +3,8 @@
  * Copyright (c) 2016, Linaro Limited
  * Copyright (c) 2014, STMicroelectronics International N.V.
  */
-#ifndef __CORE_MMU_ARCH_H
-#define __CORE_MMU_ARCH_H
+#ifndef __MM_CORE_MMU_ARCH_H
+#define __MM_CORE_MMU_ARCH_H
 
 #ifndef __ASSEMBLER__
 #include <arm.h>
@@ -76,9 +76,7 @@
  * that these magic numbers are correct.
  */
 #define CORE_MMU_BASE_TABLE_OFFSET \
-	(CFG_TEE_CORE_NB_CORE * \
-	 BIT(CFG_LPAE_ADDR_SPACE_BITS - CORE_MMU_BASE_TABLE_SHIFT) * \
-	 U(8))
+	(BIT(CFG_LPAE_ADDR_SPACE_BITS - CORE_MMU_BASE_TABLE_SHIFT) * U(8))
 #endif
 
 #ifndef __ASSEMBLER__
@@ -137,15 +135,6 @@ struct core_mmu_user_map {
 };
 #endif
 
-#ifdef CFG_WITH_LPAE
-bool core_mmu_user_va_range_is_defined(void);
-#else
-static inline bool __noprof core_mmu_user_va_range_is_defined(void)
-{
-	return true;
-}
-#endif
-
 /* Cache maintenance operation type */
 enum cache_op {
 	DCACHE_CLEAN,
@@ -172,13 +161,14 @@ static inline TEE_Result cache_op_outer(enum cache_op op __unused,
 }
 #endif
 
-/* Do section mapping, not support on LPAE */
-void map_memarea_sections(const struct tee_mmap_region *mm, uint32_t *ttb);
+#if defined(ARM64)
+unsigned int core_mmu_arm64_get_pa_width(void);
+#endif
 
 static inline bool core_mmu_check_max_pa(paddr_t pa __maybe_unused)
 {
 #if defined(ARM64)
-	return pa <= (BIT64(CFG_CORE_ARM64_PA_BITS) - 1);
+	return pa <= (BIT64(core_mmu_arm64_get_pa_width()) - 1);
 #elif defined(CFG_CORE_LARGE_PHYS_ADDR)
 	return pa <= (BIT64(40) - 1);
 #else
@@ -211,6 +201,11 @@ static inline unsigned int core_mmu_get_va_width(void)
 	return 32;
 }
 
+static inline bool core_mmu_va_is_valid(vaddr_t va)
+{
+	return va < BIT64(core_mmu_get_va_width());
+}
+
 static inline bool core_mmu_level_in_range(unsigned int level)
 {
 #if CORE_MMU_BASE_TABLE_LEVEL == 0
@@ -223,4 +218,4 @@ static inline bool core_mmu_level_in_range(unsigned int level)
 
 #endif /*__ASSEMBLER__*/
 
-#endif /* CORE_MMU_H */
+#endif /* __MM_CORE_MMU_ARCH_H */

@@ -5,17 +5,25 @@ flavor_dts_file-157C_DHCOM_PDK2 = stm32mp157c-dhcom-pdk2.dts
 flavor_dts_file-157C_DK2 = stm32mp157c-dk2.dts
 flavor_dts_file-157C_ED1 = stm32mp157c-ed1.dts
 flavor_dts_file-157C_EV1 = stm32mp157c-ev1.dts
+flavor_dts_file-157A_DK1_SCMI = stm32mp157a-dk1-scmi.dts
+flavor_dts_file-157C_DK2_SCMI = stm32mp157c-dk2-scmi.dts
+flavor_dts_file-157C_ED1_SCMI = stm32mp157c-ed1-scmi.dts
+flavor_dts_file-157C_EV1_SCMI = stm32mp157c-ev1-scmi.dts
 
 flavor_dts_file-135F_DK = stm32mp135f-dk.dts
 
 flavorlist-cryp-512M = $(flavor_dts_file-157C_DK2) \
+		       $(flavor_dts_file-157C_DK2_SCMI) \
 		       $(flavor_dts_file-135F_DK)
 
-flavorlist-no_cryp-512M = $(flavor_dts_file-157A_DK1)
+flavorlist-no_cryp-512M = $(flavor_dts_file-157A_DK1) \
+			  $(flavor_dts_file-157A_DK1_SCMI)
 
 flavorlist-cryp-1G = $(flavor_dts_file-157C_DHCOM_PDK2) \
 		     $(flavor_dts_file-157C_ED1) \
-		     $(flavor_dts_file-157C_EV1)
+		     $(flavor_dts_file-157C_EV1) \
+		     $(flavor_dts_file-157C_ED1_SCMI) \
+		     $(flavor_dts_file-157C_EV1_SCMI)
 
 flavorlist-no_cryp-1G = $(flavor_dts_file-157A_DHCOR_AVENGER96)
 
@@ -31,16 +39,27 @@ flavorlist-1G = $(flavorlist-cryp-1G) \
 flavorlist-MP15-HUK-DT = $(flavor_dts_file-157A_DK1) \
 			 $(flavor_dts_file-157C_DK2) \
 			 $(flavor_dts_file-157C_ED1) \
-			 $(flavor_dts_file-157C_EV1)
+			 $(flavor_dts_file-157C_EV1) \
+			 $(flavor_dts_file-157A_DK1_SCMI) \
+			 $(flavor_dts_file-157C_DK2_SCMI) \
+			 $(flavor_dts_file-157C_ED1_SCMI) \
+			 $(flavor_dts_file-157C_EV1_SCMI)
 
 flavorlist-MP15 = $(flavor_dts_file-157A_DHCOR_AVENGER96) \
 		  $(flavor_dts_file-157A_DK1) \
 		  $(flavor_dts_file-157C_DHCOM_PDK2) \
 		  $(flavor_dts_file-157C_DK2) \
 		  $(flavor_dts_file-157C_ED1) \
-		  $(flavor_dts_file-157C_EV1)
+		  $(flavor_dts_file-157C_EV1) \
+		  $(flavor_dts_file-157A_DK1_SCMI) \
+		  $(flavor_dts_file-157C_DK2_SCMI) \
+		  $(flavor_dts_file-157C_ED1_SCMI) \
+		  $(flavor_dts_file-157C_EV1_SCMI)
 
 flavorlist-MP13 = $(flavor_dts_file-135F_DK)
+
+flavorlist-dh-platforms = $(flavor_dts_file-157A_DHCOR_AVENGER96) \
+			  $(flavor_dts_file-157C_DHCOM_PDK2)
 
 ifneq ($(PLATFORM_FLAVOR),)
 ifeq ($(flavor_dts_file-$(PLATFORM_FLAVOR)),)
@@ -73,6 +92,10 @@ ifneq ($(filter $(CFG_EMBED_DTB_SOURCE_FILE),$(flavorlist-MP15)),)
 $(call force,CFG_STM32MP15,y)
 endif
 
+ifneq ($(filter $(CFG_EMBED_DTB_SOURCE_FILE),$(flavorlist-dh-platforms)),)
+CFG_STM32_ALLOW_UNSAFE_PROBE ?= y
+endif
+
 # CFG_STM32MP1x switches are exclusive.
 # - CFG_STM32MP15 is enabled for STM32MP15x-* targets (default)
 # - CFG_STM32MP13 is enabled for STM32MP13x-* targets
@@ -95,38 +118,51 @@ $(call force,CFG_DRIVERS_CLK,y)
 $(call force,CFG_DRIVERS_CLK_DT,y)
 $(call force,CFG_DRIVERS_GPIO,y)
 $(call force,CFG_DRIVERS_PINCTRL,y)
+$(call force,CFG_DRIVERS_REGULATOR,y)
 $(call force,CFG_GIC,y)
 $(call force,CFG_INIT_CNTVOFF,y)
 $(call force,CFG_PSCI_ARM32,y)
+$(call force,CFG_REGULATOR_FIXED,y)
 $(call force,CFG_SECURE_TIME_SOURCE_CNTPCT,y)
 $(call force,CFG_SM_PLATFORM_HANDLER,y)
 $(call force,CFG_STM32_SHARED_IO,y)
 
 ifeq ($(CFG_STM32MP13),y)
 $(call force,CFG_BOOT_SECONDARY_REQUEST,n)
+$(call force,CFG_CORE_ASYNC_NOTIF,y)
+$(call force,CFG_CORE_ASYNC_NOTIF_GIC_INTID,31)
 $(call force,CFG_CORE_RESERVED_SHM,n)
 $(call force,CFG_DRIVERS_CLK_FIXED,y)
+$(call force,CFG_SCMI_MSG_PERF_DOMAIN,y)
 $(call force,CFG_SECONDARY_INIT_CNTFRQ,n)
 $(call force,CFG_STM32_GPIO,y)
+$(call force,CFG_STM32_VREFBUF,y)
 $(call force,CFG_STM32MP_CLK_CORE,y)
-$(call force,CFG_STM32MP1_SHARED_RESOURCES,n)
+$(call force,CFG_STM32MP1_RSTCTRL,y)
 $(call force,CFG_STM32MP13_CLK,y)
+$(call force,CFG_STM32MP13_REGULATOR_IOD,y)
 $(call force,CFG_TEE_CORE_NB_CORE,1)
 $(call force,CFG_WITH_NSEC_GPIOS,n)
 CFG_EXTERNAL_DT ?= n
-CFG_STM32MP_OPP_COUNT ?= 2
-CFG_STM32MP1_SCMI_SHM_SYSRAM ?= y
+CFG_STM32_CPU_OPP ?= y
+CFG_STM32MP_OPP_COUNT ?= 3
+# Measured latency on STM32MP13 is around 650uS so set 1mS
+CFG_STM32MP_OPP_LATENCY_US ?= 1000
 CFG_WITH_PAGER ?= n
 endif # CFG_STM32MP13
 
 ifeq ($(CFG_STM32MP15),y)
 $(call force,CFG_BOOT_SECONDARY_REQUEST,y)
 $(call force,CFG_DRIVERS_CLK_FIXED,n)
+$(call force,CFG_HALT_CORES_SGI,15)
+$(call force,CFG_SCMI_MSG_PERF_DOMAIN,n)
 $(call force,CFG_SECONDARY_INIT_CNTFRQ,y)
-$(call force,CFG_STM32MP1_SHARED_RESOURCES,y)
+$(call force,CFG_STM32_PKA,n)
 $(call force,CFG_STM32_SAES,n)
+$(call force,CFG_STM32MP1_RSTCTRL,y)
 $(call force,CFG_STM32MP15_CLK,y)
-CFG_CORE_RESERVED_SHM ?= y
+CFG_CORE_RESERVED_SHM ?= n
+CFG_MULTI_CORE_HALTING ?= y
 CFG_EXTERNAL_DT ?= y
 CFG_STM32_BSEC_SIP ?= y
 CFG_TEE_CORE_NB_CORE ?= 2
@@ -141,6 +177,16 @@ CFG_WITH_LPAE ?= y
 CFG_MMAP_REGIONS ?= 23
 CFG_DTB_MAX_SIZE ?= (256 * 1024)
 CFG_CORE_ASLR ?= n
+
+CFG_STM32MP_REMOTEPROC ?= n
+CFG_DRIVERS_REMOTEPROC ?= $(CFG_STM32MP_REMOTEPROC)
+CFG_REMOTEPROC_PTA ?= $(CFG_STM32MP_REMOTEPROC)
+ifeq ($(CFG_REMOTEPROC_PTA),y)
+# Remoteproc early TA for coprocessor firmware management in boot stages
+CFG_IN_TREE_EARLY_TAS += remoteproc/80a4c275-0a47-4905-8285-1486a9771a08
+# Embed public part of this key in OP-TEE OS
+RPROC_SIGN_KEY ?= keys/default.pem
+endif
 
 ifneq ($(CFG_WITH_LPAE),y)
 # Without LPAE, default TEE virtual address range is 1MB, we need at least 2MB.
@@ -166,6 +212,7 @@ CFG_DRAM_SIZE    ?= 0x40000000
 CFG_STM32MP1_SCMI_SHM_SYSRAM ?= n
 ifeq ($(CFG_STM32MP1_SCMI_SHM_SYSRAM),y)
 $(call force,CFG_STM32MP1_SCMI_SHM_BASE,0x2ffff000)
+CFG_TZSRAM_SIZE  ?= 0x0003f000
 else
 CFG_STM32MP1_SCMI_SHM_BASE ?= 0
 endif
@@ -179,7 +226,7 @@ else
 CFG_TZDRAM_SIZE  ?= 0x02000000
 endif
 CFG_TZSRAM_START ?= 0x2ffc0000
-CFG_TZSRAM_SIZE  ?= 0x0003f000
+CFG_TZSRAM_SIZE  ?= 0x00040000
 ifeq ($(CFG_CORE_RESERVED_SHM),y)
 CFG_SHMEM_START  ?= ($(CFG_TZDRAM_START) + $(CFG_TZDRAM_SIZE))
 CFG_SHMEM_SIZE   ?= ($(CFG_DRAM_BASE) + $(CFG_DRAM_SIZE) - $(CFG_SHMEM_START))
@@ -192,16 +239,26 @@ endif #CFG_STM32MP15
 CFG_STM32_BSEC ?= y
 CFG_STM32_CRYP ?= y
 CFG_STM32_ETZPC ?= y
+CFG_STM32_EXTI ?= y
 CFG_STM32_GPIO ?= y
+CFG_STM32_HASH ?= y
 CFG_STM32_I2C ?= y
 CFG_STM32_IWDG ?= y
+CFG_STM32_PKA ?= y
 CFG_STM32_RNG ?= y
 CFG_STM32_RSTCTRL ?= y
+CFG_STM32_RTC ?= y
 CFG_STM32_SAES ?= y
 CFG_STM32_TAMP ?= y
 CFG_STM32_UART ?= y
 CFG_STPMIC1 ?= y
 CFG_TZC400 ?= y
+
+# Default RTC accuracy, higher accuracy means higher power consumption
+CFG_STM32_RTC_HIGH_ACCURACY ?= n
+
+CFG_DRIVERS_I2C ?= $(CFG_STM32_I2C)
+CFG_REGULATOR_GPIO ?= $(CFG_STM32_GPIO)
 
 CFG_WITH_SOFTWARE_PRNG ?= n
 ifneq ($(CFG_WITH_SOFTWARE_PRNG),y)
@@ -214,7 +271,10 @@ $(call force,CFG_STM32_GPIO,y)
 endif
 
 # If any crypto driver is enabled, enable the crypto-framework layer
-ifeq ($(call cfg-one-enabled, CFG_STM32_CRYP CFG_STM32_SAES),y)
+ifeq ($(call cfg-one-enabled, CFG_STM32_CRYP \
+	                      CFG_STM32_HASH \
+	                      CFG_STM32_PKA  \
+	                      CFG_STM32_SAES),y)
 $(call force,CFG_STM32_CRYPTO_DRIVER,y)
 endif
 
@@ -222,6 +282,9 @@ CFG_DRIVERS_RSTCTRL ?= $(CFG_STM32_RSTCTRL)
 $(eval $(call cfg-depends-all,CFG_STM32_RSTCTRL,CFG_DRIVERS_RSTCTRL))
 
 CFG_WDT ?= $(CFG_STM32_IWDG)
+CFG_WDT_SM_HANDLER ?= $(CFG_WDT)
+CFG_WDT_SM_HANDLER_ID ?= 0xbc000000
+$(eval $(call cfg-depends-all,CFG_STM32_IWDG,CFG_WDT_SM_HANDLER CFG_WDT))
 
 # Platform specific configuration
 CFG_STM32MP_PANIC_ON_TZC_PERM_VIOLATION ?= y
@@ -246,6 +309,14 @@ ifeq ($(CFG_STM32_BSEC_PTA),y)
 $(call force,CFG_STM32_BSEC,y,Mandated by CFG_BSEC_PTA)
 endif
 
+CFG_STM32_DEBUG_ACCESS_PTA ?= y
+ifeq ($(CFG_STM32_DEBUG_ACCESS_PTA),y)
+$(call force,CFG_STM32_BSEC,y,Mandated by CFG_STM32_DEBUG_ACCESS_PTA)
+endif
+
+# Default disable CPU OPP support
+CFG_STM32_CPU_OPP ?= n
+
 # Default enable SCMI PTA support
 CFG_SCMI_PTA ?= y
 ifeq ($(CFG_SCMI_PTA),y)
@@ -259,7 +330,7 @@ endif # CFG_SCMI_PTA
 
 CFG_SCMI_SCPFW ?= n
 ifeq ($(CFG_SCMI_SCPFW),y)
-$(call force,CFG_SCMI_SCPFW_PRODUCT,optee-stm32mp1)
+$(call force,CFG_SCMI_SCPFW_PRODUCT,stm32mp1)
 endif
 
 CFG_SCMI_MSG_DRIVERS ?= n
@@ -294,6 +365,9 @@ endif
 CFG_ENABLE_EMBEDDED_TESTS ?= y
 CFG_WITH_STATS ?= y
 
+# Default enable software fallback on crypto drivers
+CFG_STM32_SAES_SW_FALLBACK ?= y
+
 # Enable OTP update with BSEC driver
 CFG_STM32_BSEC_WRITE ?= y
 
@@ -303,9 +377,6 @@ CFG_TEE_CORE_DEBUG ?= n
 CFG_UNWIND ?= n
 CFG_LOCKDEP ?= n
 CFG_TA_BGET_TEST ?= n
-# Default disable early TA compression to support a smaller HEAP size
-CFG_EARLY_TA_COMPRESS ?= n
-CFG_CORE_HEAP_SIZE ?= 49152
 endif
 
 # Non-secure UART and GPIO/pinctrl for the output console
@@ -369,4 +440,18 @@ CFG_STM32_DEBUG_ACCESS ?= $(CFG_TEE_CORE_DEBUG)
 # Sanity on choice config switches
 ifeq ($(call cfg-all-enabled,CFG_STM32MP15 CFG_STM32MP13),y)
 $(error CFG_STM32MP13_CLK and CFG_STM32MP15_CLK are exclusive)
+endif
+
+CFG_DRIVERS_FIREWALL ?= y
+ifeq ($(CFG_STM32_ETZPC),y)
+$(call force,CFG_DRIVERS_FIREWALL,y)
+endif
+
+# Allow probing of unsafe peripherals. Firewall config will not be checked
+CFG_STM32_ALLOW_UNSAFE_PROBE ?= n
+
+# Enable RTC
+ifeq ($(CFG_STM32_RTC),y)
+$(call force,CFG_DRIVERS_RTC,y)
+$(call force,CFG_RTC_PTA,y)
 endif

@@ -26,8 +26,8 @@
 #define COLOR_WHITE	"\x1B[37m"
 
 #define NPCM_MEASURE_BASE	0xF0848000
-#define NPCM_MEASURE_DME	0x0E0
-#define NPCM_MEASURE_SIZE	64
+#define NPCM_MEASURE_UUID	0xC50
+#define NPCM_MEASURE_SIZE	5
 
 static struct ns16550_data console_data __nex_bss;
 
@@ -60,7 +60,7 @@ void boot_primary_init_intc(void)
 	gic_init(GICC_BASE, GICD_BASE);
 }
 
-void console_init(void)
+void plat_console_init(void)
 {
 	ns16550_init(&console_data, CONSOLE_UART_BASE, IO_WIDTH_U32, 2);
 	register_serial_console(&console_data.chip);
@@ -76,7 +76,7 @@ TEE_Result tee_otp_get_hw_unique_key(struct tee_hw_unique_key *hwkey)
 	if (npcm_hwkey.ready)
 		goto out;
 
-	vaddr = phys_to_virt(NPCM_MEASURE_BASE + NPCM_MEASURE_DME,
+	vaddr = phys_to_virt(NPCM_MEASURE_BASE + NPCM_MEASURE_UUID,
 			     MEM_AREA_RAM_NSEC, NPCM_MEASURE_SIZE);
 	if (!vaddr) {
 		EMSG("Not enough memory mapped");

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 /*
  * Copyright (c) 2014, STMicroelectronics International N.V.
- * Copyright (c) 2020, 2022 Linaro Limited
+ * Copyright (c) 2020, 2022-2023 Linaro Limited
  * Copyright (c) 2022, Technology Innovation Institute (TII)
  */
 
@@ -22,7 +22,9 @@
 #include <tee_api_types.h>
 #include <tee/tee_cryp_utl.h>
 #include <tee/tee_obj.h>
+#include <tee/tee_pobj.h>
 #include <tee/tee_svc_cryp.h>
+#include <tee/tee_svc_storage.h>
 #include <tee/tee_svc.h>
 #include <trace.h>
 #include <utee_defines.h>
@@ -1184,7 +1186,13 @@ TEE_Result syscall_cryp_obj_get_info(unsigned long obj,
 	o_info.obj_type = o->info.objectType;
 	o_info.obj_size = o->info.objectSize;
 	o_info.max_obj_size = o->info.maxObjectSize;
-	o_info.obj_usage = o->info.objectUsage;
+	if (o->info.handleFlags & TEE_HANDLE_FLAG_PERSISTENT) {
+		tee_pobj_lock_usage(o->pobj);
+		o_info.obj_usage = o->pobj->obj_info_usage;
+		tee_pobj_unlock_usage(o->pobj);
+	} else {
+		o_info.obj_usage = o->info.objectUsage;
+	}
 	o_info.data_size = o->info.dataSize;
 	o_info.data_pos = o->info.dataPosition;
 	o_info.handle_flags = o->info.handleFlags;
@@ -1202,12 +1210,22 @@ TEE_Result syscall_cryp_obj_restrict_usage(unsigned long obj,
 	struct tee_obj *o = NULL;
 
 	res = tee_obj_get(to_user_ta_ctx(sess->ctx), uref_to_vaddr(obj), &o);
-	if (res != TEE_SUCCESS)
-		goto exit;
+	if (res)
+		return res;
 
-	o->info.objectUsage &= usage;
+	if (o->info.handleFlags & TEE_HANDLE_FLAG_PERSISTENT) {
+		uint32_t new_usage = 0;
 
-exit:
+		tee_pobj_lock_usage(o->pobj);
+		new_usage = o->pobj->obj_info_usage & usage;
+		res = tee_svc_storage_write_usage(o, new_usage);
+		if (!res)
+			o->pobj->obj_info_usage = new_usage;
+		tee_pobj_unlock_usage(o->pobj);
+	} else {
+		o->info.objectUsage &= usage;
+	}
+
 	return res;
 }
 
@@ -1271,6 +1289,7 @@ TEE_Result syscall_cryp_obj_get_attr(unsigned long obj, unsigned long attr_id,
 	int idx = 0;
 	const struct attr_ops *ops = NULL;
 	void *attr = NULL;
+	uint32_t obj_usage = 0;
 
 	res = tee_obj_get(to_user_ta_ctx(sess->ctx), uref_to_vaddr(obj), &o);
 	if (res != TEE_SUCCESS)
@@ -1281,9 +1300,17 @@ TEE_Result syscall_cryp_obj_get_attr(unsigned long obj, unsigned long attr_id,
 		return TEE_ERROR_BAD_PARAMETERS;
 
 	/* Check that getting the attribute is allowed */
-	if (!(attr_id & TEE_ATTR_FLAG_PUBLIC) &&
-	    !(o->info.objectUsage & TEE_USAGE_EXTRACTABLE))
-		return TEE_ERROR_BAD_PARAMETERS;
+	if (!(attr_id & TEE_ATTR_FLAG_PUBLIC)) {
+		if (o->info.handleFlags & TEE_HANDLE_FLAG_PERSISTENT) {
+			tee_pobj_lock_usage(o->pobj);
+			obj_usage = o->pobj->obj_info_usage;
+			tee_pobj_unlock_usage(o->pobj);
+		} else {
+			obj_usage = o->info.objectUsage;
+		}
+		if (!(obj_usage & TEE_USAGE_EXTRACTABLE))
+			return TEE_ERROR_BAD_PARAMETERS;
+	}
 
 	type_props = tee_svc_find_type_props(o->info.objectType);
 	if (!type_props) {
@@ -1619,7 +1646,10 @@ TEE_Result tee_obj_set_type(struct tee_obj *o, uint32_t obj_type,
 
 	o->info.objectType = obj_type;
 	o->info.maxObjectSize = max_key_size;
-	o->info.objectUsage = TEE_USAGE_DEFAULT;
+	if (o->info.handleFlags & TEE_HANDLE_FLAG_PERSISTENT)
+		o->pobj->obj_info_usage = TEE_USAGE_DEFAULT;
+	else
+		o->info.objectUsage = TEE_USAGE_DEFAULT;
 
 	return TEE_SUCCESS;
 }
@@ -1860,24 +1890,6 @@ static TEE_Result get_ec_key_size(uint32_t curve, size_t *key_size)
 	return TEE_SUCCESS;
 }
 
-static size_t get_used_bits(const TEE_Attribute *a)
-{
-	TEE_Result res = TEE_SUCCESS;
-	int nbits = a->content.ref.length * 8;
-	int v = 0;
-	void *bbuf = NULL;
-
-	res = bb_memdup_user(a->content.ref.buffer, a->content.ref.length,
-			     &bbuf);
-	if (res)
-		return 0;
-
-	bit_ffs(bbuf, nbits, &v);
-
-	bb_free(bbuf, a->content.ref.length);
-	return nbits - v;
-}
-
 static TEE_Result tee_svc_cryp_obj_populate_type(
 		struct tee_obj *o,
 		const struct tee_cryp_obj_type_props *type_props,
@@ -1955,7 +1967,8 @@ static TEE_Result tee_svc_cryp_obj_populate_type(
 		 */
 		if (type_props->type_attrs[idx].flags &
 		    TEE_TYPE_ATTR_BIGNUM_MAXBITS) {
-			if (get_used_bits(attrs + n) > o->info.maxObjectSize)
+			if (crypto_bignum_num_bits(*(struct bignum **)attr) >
+			    o->info.maxObjectSize)
 				return TEE_ERROR_BAD_STATE;
 		}
 	}
@@ -2057,7 +2070,13 @@ TEE_Result syscall_cryp_obj_copy(unsigned long dst, unsigned long src)
 
 	dst_o->info.handleFlags |= TEE_HANDLE_FLAG_INITIALIZED;
 	dst_o->info.objectSize = src_o->info.objectSize;
-	dst_o->info.objectUsage = src_o->info.objectUsage;
+	if (src_o->info.handleFlags & TEE_HANDLE_FLAG_PERSISTENT) {
+		tee_pobj_lock_usage(src_o->pobj);
+		dst_o->info.objectUsage = src_o->pobj->obj_info_usage;
+		tee_pobj_unlock_usage(src_o->pobj);
+	} else {
+		dst_o->info.objectUsage = src_o->info.objectUsage;
+	}
 	return TEE_SUCCESS;
 }
 
@@ -2068,10 +2087,12 @@ static TEE_Result check_pub_rsa_key(struct bignum *e)
 
 	/*
 	 * NIST SP800-56B requires public RSA key to be an odd integer in
-	 * the range 65537 <= e < 2^256.
+	 * the range 65537 <= e < 2^256. AOSP requires implementations to
+	 * support public exponents >= 3, which can be allowed by enabling
+	 * CFG_RSA_PUB_EXPONENT_3.
 	 */
 
-	if (n > sizeof(bin_key) || n < 3)
+	if (n > sizeof(bin_key) || n < 1)
 		return TEE_ERROR_BAD_PARAMETERS;
 
 	crypto_bignum_bn2bin(e, bin_key);
@@ -2079,19 +2100,23 @@ static TEE_Result check_pub_rsa_key(struct bignum *e)
 	if (!(bin_key[n - 1] & 1)) /* key must be odd */
 		return TEE_ERROR_BAD_PARAMETERS;
 
-	if (n == 3) {
+	if (n <= 3) {
+		uint32_t min_key = 65537;
 		uint32_t key = 0;
+		size_t m = 0;
 
-		for (n = 0; n < 3; n++) {
+		if (IS_ENABLED(CFG_RSA_PUB_EXPONENT_3))
+			min_key = 3;
+
+		for (m = 0; m < n; m++) {
 			key <<= 8;
-			key |= bin_key[n];
+			key |= bin_key[m];
 		}
 
-		if (key < 65537)
+		if (key < min_key)
 			return TEE_ERROR_BAD_PARAMETERS;
 	}
 
-	/* key is larger than 65537 */
 	return TEE_SUCCESS;
 }
 
@@ -2114,7 +2139,10 @@ static TEE_Result tee_svc_obj_generate_key_rsa(
 		if (res)
 			return res;
 	} else {
-		crypto_bignum_bin2bn((const uint8_t *)&e, sizeof(e), key->e);
+		res = crypto_bignum_bin2bn((const uint8_t *)&e, sizeof(e),
+					   key->e);
+		if (res)
+			return res;
 	}
 	res = crypto_acipher_gen_rsa_key(key, key_size);
 	if (res != TEE_SUCCESS)
@@ -3691,15 +3719,24 @@ TEE_Result syscall_cryp_derive_key(unsigned long state,
 	if (res != TEE_SUCCESS)
 		goto out;
 
-	/* Find information needed about the object to initialize */
-	sk = so->attr;
-
 	/* Find description of object */
 	type_props = tee_svc_find_type_props(so->info.objectType);
 	if (!type_props) {
 		res = TEE_ERROR_NOT_SUPPORTED;
 		goto out;
 	}
+
+	/*
+	 * The key type must be a simple symmetric key since sk represents
+	 * such a key type.
+	 */
+	if (type_props->type_attrs != tee_cryp_obj_secret_value_attrs) {
+		res = TEE_ERROR_NOT_SUPPORTED;
+		goto out;
+	}
+
+	/* Find information needed about the object to initialize */
+	sk = so->attr;
 
 	if (cs->algo == TEE_ALG_DH_DERIVE_SHARED_SECRET) {
 		struct bignum *pub = NULL;
@@ -3727,21 +3764,24 @@ TEE_Result syscall_cryp_derive_key(unsigned long state,
 
 		pub = crypto_bignum_allocate(alloc_size);
 		ss = crypto_bignum_allocate(alloc_size);
-		if (pub && ss) {
-			crypto_bignum_bin2bn(bbuf, bin_size, pub);
-			res = crypto_acipher_dh_shared_secret(ko->attr,
-							      pub, ss);
-			if (res == TEE_SUCCESS) {
-				sk->key_size = crypto_bignum_num_bytes(ss);
-				crypto_bignum_bn2bin(ss, (uint8_t *)(sk + 1));
-				so->info.handleFlags |=
-						TEE_HANDLE_FLAG_INITIALIZED;
-				set_attribute(so, type_props,
-					      TEE_ATTR_SECRET_VALUE);
-			}
-		} else {
+		if (!pub || !ss) {
 			res = TEE_ERROR_OUT_OF_MEMORY;
+			goto dh_out;
 		}
+		crypto_bignum_bin2bn(bbuf, bin_size, pub);
+		res = crypto_acipher_dh_shared_secret(ko->attr,
+						      pub, ss);
+		if (res)
+			goto dh_out;
+		if (crypto_bignum_num_bytes(ss) > sk->alloc_size) {
+			res = TEE_ERROR_BAD_PARAMETERS;
+			goto dh_out;
+		}
+		sk->key_size = crypto_bignum_num_bytes(ss);
+		crypto_bignum_bn2bin(ss, (uint8_t *)(sk + 1));
+		so->info.handleFlags |= TEE_HANDLE_FLAG_INITIALIZED;
+		set_attribute(so, type_props, TEE_ATTR_SECRET_VALUE);
+dh_out:
 		crypto_bignum_free(&pub);
 		crypto_bignum_free(&ss);
 	} else if (cs->algo == TEE_ALG_ECDH_DERIVE_SHARED_SECRET) {
@@ -3834,7 +3874,7 @@ TEE_Result syscall_cryp_derive_key(unsigned long state,
 			goto out;
 
 		/* Requested size must fit into the output object's buffer */
-		if (okm_len > ik->alloc_size) {
+		if (okm_len > sk->alloc_size) {
 			res = TEE_ERROR_BAD_PARAMETERS;
 			goto out;
 		}
@@ -3863,7 +3903,7 @@ TEE_Result syscall_cryp_derive_key(unsigned long state,
 			goto out;
 
 		/* Requested size must fit into the output object's buffer */
-		if (derived_key_len > ss->alloc_size) {
+		if (derived_key_len > sk->alloc_size) {
 			res = TEE_ERROR_BAD_PARAMETERS;
 			goto out;
 		}
@@ -3892,7 +3932,7 @@ TEE_Result syscall_cryp_derive_key(unsigned long state,
 			goto out;
 
 		/* Requested size must fit into the output object's buffer */
-		if (derived_key_len > ss->alloc_size) {
+		if (derived_key_len > sk->alloc_size) {
 			res = TEE_ERROR_BAD_PARAMETERS;
 			goto out;
 		}
@@ -4399,6 +4439,7 @@ TEE_Result syscall_asymm_operate(unsigned long state,
 	int salt_len = 0;
 	TEE_Attribute *params = NULL;
 	size_t alloc_size = 0;
+	uint32_t mgf_algo = 0;
 
 	res = tee_svc_cryp_get_state(sess, uref_to_vaddr(state), &cs);
 	if (res != TEE_SUCCESS)
@@ -4498,41 +4539,33 @@ TEE_Result syscall_asymm_operate(unsigned long state,
 				label_len = params[n].content.ref.length;
 				break;
 			}
-			/*
-			 * If the optional TEE_ATTR_RSA_OAEP_MGF_HASH is
-			 * provided for algorithm
-			 * TEE_ALG_RSAES_PKCS1_OAEP_MGF1_x it must match
-			 * the internal hash x since we don't support using
-			 * a different hash for MGF1 yet.
-			 */
+
 			if (cs->algo != TEE_ALG_RSAES_PKCS1_V1_5 &&
 			    params[n].attributeID ==
 			    TEE_ATTR_RSA_OAEP_MGF_HASH) {
-				uint32_t hash = 0;
 				void *buf = params[n].content.ref.buffer;
 
 				if (params[n].content.ref.length !=
-				    sizeof(hash)) {
+				    sizeof(mgf_algo)) {
 					res = TEE_ERROR_BAD_PARAMETERS;
 					goto out;
 				}
 
-				res = copy_from_user(&hash, buf, sizeof(hash));
+				res = copy_from_user(&mgf_algo, buf,
+						     sizeof(mgf_algo));
 				if (res)
 					goto out;
-
-				if (hash !=
-				    TEE_INTERNAL_HASH_TO_ALGO(cs->algo)) {
-					res = TEE_ERROR_NOT_SUPPORTED;
-					goto out;
-				}
 			}
 		}
+
+		if (!mgf_algo)
+			mgf_algo = TEE_INTERNAL_HASH_TO_ALGO(cs->algo);
 
 		if (cs->mode == TEE_MODE_ENCRYPT) {
 			enter_user_access();
 			res = crypto_acipher_rsaes_encrypt(cs->algo, o->attr,
 							   label, label_len,
+							   mgf_algo,
 							   src_data, src_len,
 							   dst_data, &dlen);
 			exit_user_access();
@@ -4540,6 +4573,7 @@ TEE_Result syscall_asymm_operate(unsigned long state,
 			enter_user_access();
 			res = crypto_acipher_rsaes_decrypt(
 					cs->algo, o->attr, label, label_len,
+					mgf_algo,
 					src_data, src_len, dst_data, &dlen);
 			exit_user_access();
 		} else {

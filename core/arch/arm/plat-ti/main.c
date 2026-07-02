@@ -41,7 +41,7 @@ void boot_primary_init_intc(void)
 
 void boot_secondary_init_intc(void)
 {
-	gic_cpu_init();
+	gic_init_per_cpu();
 }
 
 struct plat_nsec_ctx {
@@ -72,12 +72,12 @@ struct plat_boot_args {
 	uint8_t huk[PLAT_HW_UNIQUE_KEY_LENGTH];
 };
 
-void init_sec_mon(unsigned long nsec_entry)
+void init_sec_mon(unsigned long nsec_entry __unused)
 {
 	struct plat_boot_args *plat_boot_args;
 	struct sm_nsec_ctx *nsec_ctx;
 
-	plat_boot_args = phys_to_virt(nsec_entry, MEM_AREA_IO_SEC, 1);
+	plat_boot_args = phys_to_virt(boot_arg_nsec_entry, MEM_AREA_IO_SEC, 1);
 	if (!plat_boot_args)
 		panic();
 
@@ -104,11 +104,27 @@ void init_sec_mon(unsigned long nsec_entry)
 	nsec_ctx->ub_regs.und_lr = plat_boot_args->nsec_ctx.und_lr;
 	nsec_ctx->mon_lr = plat_boot_args->nsec_ctx.mon_lr;
 	nsec_ctx->mon_spsr = plat_boot_args->nsec_ctx.mon_spsr;
-
-	memcpy(plat_huk, plat_boot_args->huk, sizeof(plat_boot_args->huk));
 }
 
-void console_init(void)
+/* Early init HUK before SSK is derived by tee_fs_init_key_manager */
+static TEE_Result early_init_huk(void)
+{
+	struct plat_boot_args *plat_boot_args;
+
+	plat_boot_args = phys_to_virt(boot_arg_nsec_entry, MEM_AREA_IO_SEC, 1);
+	if (!plat_boot_args)
+		panic();
+
+	/* Invalidate cache to fetch data from external memory */
+	cache_op_inner(DCACHE_AREA_INVALIDATE,
+		       plat_boot_args, sizeof(*plat_boot_args));
+
+	memcpy(plat_huk, plat_boot_args->huk, sizeof(plat_boot_args->huk));
+	return TEE_SUCCESS;
+}
+early_init(early_init_huk);
+
+void plat_console_init(void)
 {
 	serial8250_uart_init(&console_data, CONSOLE_UART_BASE,
 			     CONSOLE_UART_CLK_IN_HZ, CONSOLE_BAUDRATE);

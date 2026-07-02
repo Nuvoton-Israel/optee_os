@@ -220,6 +220,14 @@
 #define MSECCFG_USEED  0x00000100
 #define MSECCFG_SSEED  0x00000200
 
+#define SEED_OPST      0xC0000000
+#define SEED_ENTROPY   0x0000FFFF
+
+#define SEED_OPST_BIST 0x00000000
+#define SEED_OPST_WAIT 0x40000000
+#define SEED_OPST_ES16 0x80000000
+#define SEED_OPST_DEAD 0xC0000000
+
 #define PRV_U 0
 #define PRV_S 1
 #define PRV_M 3
@@ -291,6 +299,7 @@
 #define PTE_A     0x040 /* Accessed */
 #define PTE_D     0x080 /* Dirty */
 #define PTE_SOFT  0x300 /* Reserved for Software */
+#define PTE_PPN   0x003FFFFFFFFFFC00 /* PPN */
 #define PTE_RSVD  0x1FC0000000000000 /* Reserved for future standard use */
 #define PTE_PBMT  0x6000000000000000 /* Svpbmt: Page-based memory types */
 #define PTE_N     0x8000000000000000 /* Svnapot: NAPOT translation contiguity */

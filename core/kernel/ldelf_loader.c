@@ -31,7 +31,7 @@ static const bool is_32bit;
 static TEE_Result alloc_and_map_fobj(struct user_mode_ctx *uctx, size_t sz,
 				     uint32_t prot, uint32_t flags, vaddr_t *va)
 {
-	size_t num_pgs = ROUNDUP(sz, SMALL_PAGE_SIZE) / SMALL_PAGE_SIZE;
+	size_t num_pgs = ROUNDUP_DIV(sz, SMALL_PAGE_SIZE);
 	struct fobj *fobj = fobj_ta_mem_alloc(num_pgs);
 	struct mobj *mobj = mobj_with_fobj_alloc(fobj, NULL,
 						 TEE_MATTR_MEM_TYPE_TAGGED);
@@ -121,7 +121,6 @@ TEE_Result ldelf_init_with_ldelf(struct ts_session *sess,
 	uint32_t panicked = 0;
 	uaddr_t usr_stack = 0;
 	struct ldelf_arg *arg_bbuf = NULL;
-	void *bbuf = NULL;
 
 	usr_stack = uctx->ldelf_stack_ptr;
 	usr_stack -= ROUNDUP(sizeof(*arg), STACK_ALIGNMENT);
@@ -154,11 +153,9 @@ TEE_Result ldelf_init_with_ldelf(struct ts_session *sess,
 		return res;
 	}
 
-	res = bb_memdup_user(arg, sizeof(*arg), &bbuf);
+	res = BB_MEMDUP_USER(arg, sizeof(*arg), &arg_bbuf);
 	if (res)
 		return res;
-
-	arg_bbuf = bbuf;
 
 	if (is_user_ta_ctx(uctx->ts_ctx)) {
 		/*
@@ -182,7 +179,7 @@ TEE_Result ldelf_init_with_ldelf(struct ts_session *sess,
 #endif
 	uctx->dl_entry_func = arg_bbuf->dl_entry;
 
-	bb_free(bbuf, sizeof(*arg));
+	bb_free(arg_bbuf, sizeof(*arg));
 
 	return TEE_SUCCESS;
 }
@@ -324,6 +321,7 @@ TEE_Result ldelf_dump_ftrace(struct user_mode_ctx *uctx,
 	uint32_t panicked = 0;
 	size_t *arg = NULL;
 	struct ts_session *sess = NULL;
+	struct ftrace_buf *saved_fbuf = NULL;
 
 	if (!uctx->ftrace_entry_func)
 		return TEE_ERROR_NOT_SUPPORTED;
@@ -345,10 +343,28 @@ TEE_Result ldelf_dump_ftrace(struct user_mode_ctx *uctx,
 	sess = ts_get_current_session();
 	sess->handle_scall = scall_handle_ldelf;
 
+	/*
+	 * This function is called twice during every ftrace dumping
+	 * process (first to obtain the size of the buffer, then to
+	 * get the actual data). The data is required to be the same
+	 * during the two calls.
+	 * Since ldelf uses syscall_sys_return() to return from the
+	 * userspace, the syscall ftrace would be enabled after that,
+	 * modifying the ftrace data.
+	 * Therefore, we need to null the fbuf pointer before entering
+	 * userspace to prevent the ftrace data is modified.
+	 */
+	saved_fbuf = sess->fbuf;
+	sess->fbuf = NULL;
+
 	res = thread_enter_user_mode((vaddr_t)buf, (vaddr_t)arg, 0, 0,
 				     usr_stack, uctx->ftrace_entry_func,
 				     is_32bit, &panicked, &panic_code);
 
+	/* Disable syscall trace again before restoring the pointer */
+	if (saved_fbuf)
+		saved_fbuf->syscall_trace_enabled = false;
+	sess->fbuf = saved_fbuf;
 	sess->handle_scall = sess->ctx->ops->handle_scall;
 	thread_user_clear_vfp(uctx);
 	ldelf_sess_cleanup(sess);

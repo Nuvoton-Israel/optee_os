@@ -14,6 +14,7 @@
 #include <kernel/dt.h>
 #include <kernel/dt_driver.h>
 #include <kernel/mutex.h>
+#include <kernel/pm.h>
 #include <libfdt.h>
 #include <mm/core_memprot.h>
 #include <stdint.h>
@@ -84,6 +85,7 @@
 
 #define CRYP_TIMEOUT_US			1000000U
 #define TIMEOUT_US_1MS			1000U
+#define CRYP_RESET_DELAY_US		U(2)
 
 /* CRYP control register fields */
 #define _CRYP_CR_RESET_VALUE		0x0U
@@ -322,14 +324,26 @@ static TEE_Result __must_check read_block(struct stm32_cryp_context *ctx,
 	return read_align_block(ctx, (void *)data);
 }
 
+static TEE_Result stm32_cryp_reset(void)
+{
+	TEE_Result res = TEE_ERROR_GENERIC;
+
+	if (!cryp_pdata.reset)
+		return TEE_SUCCESS;
+
+	res = rstctrl_assert_to(cryp_pdata.reset, TIMEOUT_US_1MS);
+	if (res)
+		return res;
+
+	udelay(CRYP_RESET_DELAY_US);
+
+	return rstctrl_deassert_to(cryp_pdata.reset, TIMEOUT_US_1MS);
+}
+
 static void cryp_end(struct stm32_cryp_context *ctx, TEE_Result prev_error)
 {
-	if (prev_error) {
-		if (rstctrl_assert_to(cryp_pdata.reset, TIMEOUT_US_1MS))
-			panic();
-		if (rstctrl_deassert_to(cryp_pdata.reset, TIMEOUT_US_1MS))
-			panic();
-	}
+	if (prev_error && stm32_cryp_reset())
+		panic();
 
 	/* Disable the CRYP peripheral */
 	io_clrbits32(ctx->base + _CRYP_CR, _CRYP_CR_CRYPEN);
@@ -1108,7 +1122,7 @@ TEE_Result stm32_cryp_update(struct stm32_cryp_context *ctx, bool last_block,
 	 */
 	if (last_block && algo_mode_is_ecb_cbc(ctx->cr) &&
 	    is_encrypt(ctx->cr) &&
-	    (ROUNDDOWN(data_size, ctx->block_u32 * sizeof(uint32_t)) !=
+	    (ROUNDDOWN2(data_size, ctx->block_u32 * sizeof(uint32_t)) !=
 	     data_size)) {
 		if (data_size < ctx->block_u32 * sizeof(uint32_t) * 2) {
 			/*
@@ -1142,7 +1156,7 @@ TEE_Result stm32_cryp_update(struct stm32_cryp_context *ctx, bool last_block,
 			 */
 
 			/* We save remaining mask and its new size */
-			memmove(ctx->extra, ctx->extra + j,
+			memmove(ctx->extra, (uint8_t *)ctx->extra + j,
 				ctx->extra_size - j);
 			ctx->extra_size -= j;
 
@@ -1229,6 +1243,29 @@ out:
 	return res;
 }
 
+static TEE_Result stm32_cryp_pm(enum pm_op op, uint32_t pm_hint,
+				const struct pm_callback_handle *hdl __unused)
+{
+	switch (op) {
+	case PM_OP_SUSPEND:
+		clk_disable(cryp_pdata.clock);
+		return TEE_SUCCESS;
+	case PM_OP_RESUME:
+		if (clk_enable(cryp_pdata.clock))
+			panic();
+
+		if (PM_HINT_IS_STATE(pm_hint, CONTEXT) && stm32_cryp_reset())
+			panic();
+
+		return TEE_SUCCESS;
+	default:
+		/* Unexpected PM operation */
+		assert(0);
+		return TEE_ERROR_NOT_IMPLEMENTED;
+	}
+}
+DECLARE_KEEP_PAGER(stm32_cryp_pm);
+
 static TEE_Result stm32_cryp_probe(const void *fdt, int node,
 				   const void *compt_data __unused)
 {
@@ -1248,7 +1285,7 @@ static TEE_Result stm32_cryp_probe(const void *fdt, int node,
 		return res;
 
 	res = rstctrl_dt_get_by_index(fdt, node, 0, &rstctrl);
-	if (res)
+	if (res != TEE_SUCCESS && res != TEE_ERROR_ITEM_NOT_FOUND)
 		return res;
 
 	cryp_pdata.clock = clk;
@@ -1259,15 +1296,10 @@ static TEE_Result stm32_cryp_probe(const void *fdt, int node,
 	if (!cryp_pdata.base.va)
 		panic();
 
-	stm32mp_register_secure_periph_iomem(cryp_pdata.base.pa);
-
 	if (clk_enable(cryp_pdata.clock))
 		panic();
 
-	if (rstctrl_assert_to(cryp_pdata.reset, TIMEOUT_US_1MS))
-		panic();
-
-	if (rstctrl_deassert_to(cryp_pdata.reset, TIMEOUT_US_1MS))
+	if (stm32_cryp_reset())
 		panic();
 
 	if (IS_ENABLED(CFG_CRYPTO_DRV_AUTHENC)) {
@@ -1285,6 +1317,8 @@ static TEE_Result stm32_cryp_probe(const void *fdt, int node,
 			panic();
 		}
 	}
+
+	register_pm_core_service_cb(stm32_cryp_pm, NULL, "stm32-cryp");
 
 	return TEE_SUCCESS;
 }

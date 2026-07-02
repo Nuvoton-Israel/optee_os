@@ -15,6 +15,11 @@
  * the conflicting defines has the same meaning in that environment.
  * Surrounding the troublesome defines with #ifndef should be enough.
  */
+
+#ifndef __has_attribute
+#define __has_attribute(x) 0
+#endif
+
 #define __deprecated	__attribute__((deprecated))
 #ifndef __packed
 #define __packed	__attribute__((packed))
@@ -24,6 +29,15 @@
 #ifndef __noreturn
 #define __noreturn	__attribute__((__noreturn__))
 #endif
+
+#ifndef __no_stack_protector
+#if __has_attribute(no_stack_protector)
+#define __no_stack_protector __attribute__((no_stack_protector))
+#else
+#define __no_stack_protector
+#endif
+#endif
+
 #define __pure		__attribute__((pure))
 #define __aligned(x)	__attribute__((aligned(x)))
 #define __printf(a, b)	__attribute__((format(printf, a, b)))
@@ -86,6 +100,14 @@
 
 #if __GCC_VERSION >= 50100 && !defined(__CHECKER__)
 #define __HAVE_BUILTIN_OVERFLOW 1
+#endif
+
+#ifdef __has_builtin
+#if __has_builtin(__builtin_add_overflow) && \
+    __has_builtin(__builtin_sub_overflow) && \
+    __has_builtin(__builtin_mul_overflow)
+#define __HAVE_BUILTIN_OVERFLOW 1
+#endif
 #endif
 
 #if __GCC_VERSION >= 90100 && !defined(__CHECKER__)
@@ -281,4 +303,14 @@
 #else
 #define __no_stackprot
 #endif
+
+#define __inhibit_loop_to_libcall \
+	__attribute__ ((__optimize__ ("-fno-tree-loop-distribute-patterns")))
+
+#if __has_attribute(no_sanitize_address)
+#define __no_asan __attribute__((no_sanitize_address))
+#else
+#define __no_asan
+#endif
+
 #endif /*COMPILER_H*/

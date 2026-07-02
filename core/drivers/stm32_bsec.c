@@ -94,6 +94,15 @@
 #define BSEC_MODE_PWR			BIT(5)
 #define BSEC_MODE_CLOSED		BIT(8)
 
+/* BSEC_DENR register fields */
+#define BSEC_DENR_DBGEN			BIT(1)
+#define BSEC_DENR_NIDEN			BIT(2)
+#define BSEC_DENR_DEVICEEN		BIT(3)
+#define BSEC_DENR_HDPEN			BIT(4)
+#define BSEC_DENR_SPIDEN		BIT(5)
+#define BSEC_DENR_SPNIDEN		BIT(6)
+#define BSEC_DENR_DBGSWEN		BIT(10)
+
 /* BSEC_DEBUG bitfields */
 #ifdef CFG_STM32MP13
 #define BSEC_DEN_ALL_MSK		(GENMASK_32(11, 10) | GENMASK_32(8, 1))
@@ -713,6 +722,20 @@ TEE_Result stm32_bsec_get_state(enum stm32_bsec_sec_state *state)
 	return TEE_SUCCESS;
 }
 
+bool stm32_bsec_hdp_is_enabled(void)
+{
+	return io_read32(bsec_base() + BSEC_DEN_OFF) & BSEC_DENR_HDPEN;
+}
+
+bool stm32_bsec_coresight_is_enabled(void)
+{
+	uint32_t denr = io_read32(bsec_base() + BSEC_DEN_OFF);
+	uint32_t coresight_mask = BSEC_DENR_DBGEN | BSEC_DENR_DEVICEEN |
+				  BSEC_DENR_DBGSWEN;
+
+	return (denr & coresight_mask) == coresight_mask;
+}
+
 static void enable_nsec_access(unsigned int otp_id)
 {
 	unsigned int idx = (otp_id - otp_upper_base()) / BSEC_BITS_PER_WORD;
@@ -736,17 +759,14 @@ static void bsec_dt_otp_nsec_access(void *fdt, int bsec_node)
 		panic();
 
 	fdt_for_each_subnode(bsec_subnode, fdt, bsec_node) {
-		unsigned int reg_offset = 0;
-		unsigned int reg_size = 0;
+		paddr_t reg_offset = 0;
+		size_t reg_size = 0;
 		unsigned int otp_id = 0;
 		unsigned int i = 0;
 		size_t size = 0;
 
-		reg_offset = fdt_reg_base_address(fdt, bsec_subnode);
-		reg_size = fdt_reg_size(fdt, bsec_subnode);
-
-		assert(reg_offset != DT_INFO_INVALID_REG &&
-		       reg_size != DT_INFO_INVALID_REG_SIZE);
+		if (fdt_reg_info(fdt, bsec_subnode, &reg_offset, &reg_size))
+			panic();
 
 		otp_id = reg_offset / sizeof(uint32_t);
 
@@ -837,8 +857,8 @@ static void save_dt_nvmem_layout(void *fdt, int bsec_node)
 		panic();
 
 	fdt_for_each_subnode(node, fdt, bsec_node) {
-		unsigned int reg_offset = 0;
-		unsigned int reg_length = 0;
+		paddr_t reg_offset = 0;
+		size_t reg_length = 0;
 		const char *string = NULL;
 		const char *s = NULL;
 		int len = 0;
@@ -852,11 +872,7 @@ static void save_dt_nvmem_layout(void *fdt, int bsec_node)
 		layout_cell->phandle = fdt_get_phandle(fdt, node);
 		assert(layout_cell->phandle != (uint32_t)-1);
 
-		reg_offset = fdt_reg_base_address(fdt, node);
-		reg_length = fdt_reg_size(fdt, node);
-
-		if (reg_offset == DT_INFO_INVALID_REG ||
-		    reg_length == DT_INFO_INVALID_REG_SIZE) {
+		if (fdt_reg_info(fdt, node, &reg_offset, &reg_length)) {
 			DMSG("Malformed nvmem %s: ignored", string);
 			continue;
 		}

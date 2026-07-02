@@ -33,7 +33,19 @@
 #define GICD_OFFSET     0x0
 #define GICD_SIZE       0x10000
 #endif
-#if defined(PLATFORM_FLAVOR_am65x) || defined(PLATFORM_FLAVOR_j721e) || \
+#if defined(PLATFORM_FLAVOR_am62lx)
+#define TI_MAILBOX_SYSC			0x10UL
+#define TI_MAILBOX_MSG			0x40UL
+#define TI_MAILBOX_FIFO_STATUS		0x80UL
+#define TI_MAILBOX_FIFO_LENGTH		0x4UL
+#define TI_MAILBOX_MSG_STATUS		0xc0UL
+#define TI_MAILBOX_TX_BASE		0x44241000UL
+#define TI_MAILBOX_RX_BASE		0x44251000UL
+#define MAILBOX_TX_START_REGION		0x70814800UL
+#define MAILBOX_RX_START_REGION		0x70815800UL
+#define TI_SCI_MAX_MESSAGE_SIZE         60
+#define TI_MAILBOX_DEFAULT_SIZE         0x1000
+#elif defined(PLATFORM_FLAVOR_am65x) || defined(PLATFORM_FLAVOR_j721e) || \
 	defined(PLATFORM_FLAVOR_j784s4)
 #define SEC_PROXY_DATA_BASE             0x32c00000
 #define SEC_PROXY_DATA_SIZE             0x100000
@@ -43,6 +55,7 @@
 #define SEC_PROXY_RT_SIZE               0x100000
 #define SEC_PROXY_RESPONSE_THREAD       6
 #define SEC_PROXY_REQUEST_THREAD        7
+#define TI_SCI_MAX_MESSAGE_SIZE         56
 #else
 #define SEC_PROXY_DATA_BASE             0x4d000000
 #define SEC_PROXY_DATA_SIZE             0x80000
@@ -52,6 +65,7 @@
 #define SEC_PROXY_RT_SIZE               0x80000
 #define SEC_PROXY_RESPONSE_THREAD       10
 #define SEC_PROXY_REQUEST_THREAD        11
+#define TI_SCI_MAX_MESSAGE_SIZE         56
 #endif
 #define OPTEE_HOST_ID                   11
 #define SEC_PROXY_TIMEOUT_US            1000000
@@ -79,18 +93,51 @@
 #define SA2UL_TI_SCI_DEV_ID	133
 #define SA2UL_TI_SCI_FW_ID	35
 #define SA2UL_TI_SCI_FW_RGN_ID	0
-#elif defined(PLATFORM_FLAVOR_am62x)
+#elif defined(PLATFORM_FLAVOR_am62x) || \
+	defined(PLATFORM_FLAVOR_am62ax) || \
+	defined(PLATFORM_FLAVOR_am62px)
 #define SA2UL_BASE		0x40900000
 #define SA2UL_TI_SCI_DEV_ID	-1
 #define SA2UL_TI_SCI_FW_ID	66
 #define SA2UL_TI_SCI_FW_RGN_ID	1
+#elif defined(PLATFORM_FLAVOR_am62lx)
+#define DTHEv2_TI_SCI_FW_ID	11
+#define DTHEv2_TI_SCI_FW_RGN_ID 0
 #endif
 #define SA2UL_REG_SIZE		0x1000
 
 /* RNG */
+#if defined(PLATFORM_FLAVOR_am62lx)
+#define RNG_BASE		0x3B100000
+#define RNG_REG_SIZE		0x80
+#elif defined(SA2UL_BASE)
 #define RNG_BASE		(SA2UL_BASE + 0x10000)
 #define RNG_REG_SIZE		0x1000
-#if defined(PLATFORM_FLAVOR_am62x)
+#elif !defined(CFG_WITH_SOFTWARE_PRNG)
+/*
+ * If we got here we're trying to build a hardware based RNG driver
+ * but are missing some crticial definitions. This is usually because
+ * we're using the wrong platform flavor.
+ */
+#error "Unknown platform flavor! No base address is defined for RNG"
+#endif
+
+/* Firewall bitmaps */
+#define FW_ENABLE_REGION        0x0a
+#define FW_BACKGROUND_REGION    BIT(8)
+#define FW_TIFS_PRIVID          0xca
+#define FW_WILDCARD_PRIVID      0xc3
+#define FW_SECURE_ONLY          GENMASK_32(7, 0)
+#define FW_NON_SECURE           GENMASK_32(15, 0)
+#if defined(PLATFORM_FLAVOR_am62lx)
+#define FW_BIG_ARM_PRIVID       0x04
+#else
+#define FW_BIG_ARM_PRIVID       0x01
+#endif
+
+#if defined(PLATFORM_FLAVOR_am62x) || \
+	defined(PLATFORM_FLAVOR_am62ax) || \
+	defined(PLATFORM_FLAVOR_am62px)
 #define RNG_TI_SCI_FW_RGN_ID	2
 #else
 #define RNG_TI_SCI_FW_RGN_ID	3

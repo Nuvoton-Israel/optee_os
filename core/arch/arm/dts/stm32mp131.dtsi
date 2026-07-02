@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /*
- * Copyright (C) STMicroelectronics 2021-2022 - All Rights Reserved
+ * Copyright (C) STMicroelectronics 2021-2025 - All Rights Reserved
  * Author: Alexandre Torgue <alexandre.torgue@foss.st.com> for STMicroelectronics.
  */
 
 #include <dt-bindings/clock/stm32mp13-clks.h>
 #include <dt-bindings/clock/stm32mp13-clksrc.h>
+#include <dt-bindings/firewall/stm32mp13-etzpc.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/regulator/st,stm32mp13-regulator.h>
 #include <dt-bindings/reset/stm32mp13-resets.h>
@@ -22,6 +23,38 @@
 			compatible = "arm,cortex-a7";
 			device_type = "cpu";
 			reg = <0>;
+			clocks = <&rcc CK_MPU>;
+			clock-names = "cpu";
+			operating-points-v2 = <&cpu0_opp_table>;
+			nvmem-cells = <&part_number_otp>;
+			nvmem-cell-names = "part_number";
+		};
+	};
+
+	cpu0_opp_table: cpu0-opp-table {
+		compatible = "operating-points-v2";
+
+		/* Non‑overdrive OPP mission profile */
+		opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+			opp-microvolt = <1250000>;
+			opp-supported-hw = <0x3>;
+			st,opp-default;
+		};
+
+		/* Overdrive OPP: 10‑year life activity @100% activity rate */
+		opp-900000000 {
+			opp-hz = /bits/ 64 <900000000>;
+			opp-microvolt = <1350000>;
+			opp-supported-hw = <0x2>;
+			st,opp-default;
+		};
+
+		/* Overdrive OPP: 10‑year life activity @25% activity rate */
+		opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			opp-microvolt = <1350000>;
+			opp-supported-hw = <0x2>;
 		};
 	};
 
@@ -83,6 +116,18 @@
 
 	};
 
+	sdmmc1_io: sdmmc1_io {
+		compatible = "st,stm32mp13-iod";
+		regulator-name = "sdmmc1_io";
+		regulator-always-on;
+	};
+
+	sdmmc2_io: sdmmc2_io {
+		compatible = "st,stm32mp13-iod";
+		regulator-name = "sdmmc2_io";
+		regulator-always-on;
+	};
+
 	soc {
 		compatible = "simple-bus";
 		#address-cells = <1>;
@@ -114,6 +159,30 @@
 			interrupts = <GIC_SPI 54 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&rcc UART5_K>;
 			resets = <&rcc UART5_R>;
+			status = "disabled";
+		};
+
+		i2c1: i2c@40012000 {
+			compatible = "st,stm32mp13-i2c";
+			reg = <0x40012000 0x400>;
+			clocks = <&rcc I2C1_K>;
+			resets = <&rcc I2C1_R>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			st,syscfg-fmp = <&syscfg 0x4 0x1>;
+			i2c-analog-filter;
+			status = "disabled";
+		};
+
+		i2c2: i2c@40013000 {
+			compatible = "st,stm32mp13-i2c";
+			reg = <0x40013000 0x400>;
+			clocks = <&rcc I2C2_K>;
+			resets = <&rcc I2C2_R>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			st,syscfg-fmp = <&syscfg 0x4 0x2>;
+			i2c-analog-filter;
 			status = "disabled";
 		};
 
@@ -159,7 +228,7 @@
 		};
 
 		pwr_regulators: pwr@50001000 {
-			compatible = "st,stm32mp1,pwr-reg";
+			compatible = "st,stm32mp1-pwr-reg";
 			reg = <0x50001000 0x10>;
 
 			reg11: reg11 {
@@ -186,6 +255,85 @@
 			status = "disabled";
 		};
 
+		exti: interrupt-controller@5000d000 {
+			compatible = "st,stm32mp1-exti";
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			reg = <0x5000d000 0x400>;
+			interrupts-extended =
+				<&intc GIC_SPI 6   IRQ_TYPE_LEVEL_HIGH>,	/* EXTI_0 */
+				<&intc GIC_SPI 7   IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 8   IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 9   IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 10  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 24  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 65  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 66  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 67  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 68  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 41  IRQ_TYPE_LEVEL_HIGH>,	/* EXTI_10 */
+				<&intc GIC_SPI 43  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 77  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 78  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 106 IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 109 IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 1   IRQ_TYPE_LEVEL_HIGH>,
+				<0>,
+				<&intc GIC_SPI 128 IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 3   IRQ_TYPE_LEVEL_HIGH>,
+				<0>,						/* EXTI_20 */
+				<&intc GIC_SPI 32  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 34  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 73  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 93  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 114 IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 38  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 39  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 40  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 72  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 53  IRQ_TYPE_LEVEL_HIGH>,	/* EXTI_30 */
+				<&intc GIC_SPI 54  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 83  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 84  IRQ_TYPE_LEVEL_HIGH>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,						/* EXTI_40 */
+				<0>,
+				<&intc GIC_SPI 75  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 75  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 96  IRQ_TYPE_LEVEL_HIGH>,
+				<0>,
+				<0>,
+				<&intc GIC_SPI 92  IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 116 IRQ_TYPE_LEVEL_HIGH>,
+				<0>,
+				<&intc GIC_SPI 117 IRQ_TYPE_LEVEL_HIGH>,	/* EXTI_50 */
+				<0>,
+				<&intc GIC_SPI 118 IRQ_TYPE_LEVEL_HIGH>,
+				<&intc GIC_SPI 119 IRQ_TYPE_LEVEL_HIGH>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,						/* EXTI_60 */
+				<0>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,
+				<0>,
+				<&intc GIC_SPI 63  IRQ_TYPE_LEVEL_HIGH>,
+				<0>,
+				<&intc GIC_SPI 98  IRQ_TYPE_LEVEL_HIGH>;	/* EXTI_70 */
+		};
+
 		syscfg: syscon@50020000 {
 			compatible = "st,stm32mp157-syscfg", "syscon";
 			reg = <0x50020000 0x400>;
@@ -205,7 +353,6 @@
 			reg = <0x5c004000 0x400>;
 			clocks = <&rcc RTCAPB>, <&rcc RTC>;
 			clock-names = "pclk", "rtc_ck";
-			status = "disabled";
 		};
 
 		bsec: efuse@5c005000 {
@@ -262,8 +409,9 @@
 		tamp: tamp@5c00a000 {
 			compatible = "st,stm32mp13-tamp";
 			reg = <0x5c00a000 0x400>;
-			interrupts = <GIC_SPI 128 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts-extended = <&exti 18 IRQ_TYPE_EDGE_RISING>;
 			clocks = <&rcc RTCAPB>;
+			st,backup-zones = <10 5 17>;
 		};
 
 		pinctrl: pin-controller@50002000 {
@@ -271,13 +419,13 @@
 			#size-cells = <1>;
 			compatible = "st,stm32mp135-pinctrl";
 			ranges = <0 0x50002000 0x8400>;
-			pins-are-numbered;
 
 			gpioa: gpio@50002000 {
 				gpio-controller;
 				#gpio-cells = <2>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
+				#access-controller-cells = <1>;
 				clocks = <&rcc GPIOA>;
 				reg = <0x0 0x400>;
 				st,bank-name = "GPIOA";
@@ -290,6 +438,7 @@
 				#gpio-cells = <2>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
+				#access-controller-cells = <1>;
 				clocks = <&rcc GPIOB>;
 				reg = <0x1000 0x400>;
 				st,bank-name = "GPIOB";
@@ -302,6 +451,7 @@
 				#gpio-cells = <2>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
+				#access-controller-cells = <1>;
 				clocks = <&rcc GPIOC>;
 				reg = <0x2000 0x400>;
 				st,bank-name = "GPIOC";
@@ -314,6 +464,7 @@
 				#gpio-cells = <2>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
+				#access-controller-cells = <1>;
 				clocks = <&rcc GPIOD>;
 				reg = <0x3000 0x400>;
 				st,bank-name = "GPIOD";
@@ -326,6 +477,7 @@
 				#gpio-cells = <2>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
+				#access-controller-cells = <1>;
 				clocks = <&rcc GPIOE>;
 				reg = <0x4000 0x400>;
 				st,bank-name = "GPIOE";
@@ -338,6 +490,7 @@
 				#gpio-cells = <2>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
+				#access-controller-cells = <1>;
 				clocks = <&rcc GPIOF>;
 				reg = <0x5000 0x400>;
 				st,bank-name = "GPIOF";
@@ -350,6 +503,7 @@
 				#gpio-cells = <2>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
+				#access-controller-cells = <1>;
 				clocks = <&rcc GPIOG>;
 				reg = <0x6000 0x400>;
 				st,bank-name = "GPIOG";
@@ -362,6 +516,7 @@
 				#gpio-cells = <2>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
+				#access-controller-cells = <1>;
 				clocks = <&rcc GPIOH>;
 				reg = <0x7000 0x400>;
 				st,bank-name = "GPIOH";
@@ -374,6 +529,7 @@
 				#gpio-cells = <2>;
 				interrupt-controller;
 				#interrupt-cells = <2>;
+				#access-controller-cells = <1>;
 				clocks = <&rcc GPIOI>;
 				reg = <0x8000 0x400>;
 				st,bank-name = "GPIOI";
@@ -383,11 +539,12 @@
 		};
 
 		etzpc: etzpc@5c007000 {
-			compatible = "st,stm32-etzpc", "firewall-bus";
+			compatible = "st,stm32-etzpc", "simple-bus";
 			reg = <0x5C007000 0x400>;
 			clocks = <&rcc TZPC>;
 			#address-cells = <1>;
 			#size-cells = <1>;
+			#access-controller-cells = <1>;
 
 			adc_2: adc@48004000 {
 				reg = <0x48004000 0x400>;
@@ -399,6 +556,7 @@
 				#interrupt-cells = <1>;
 				#address-cells = <1>;
 				#size-cells = <0>;
+				access-controllers = <&etzpc STM32MP1_ETZPC_ADC2_ID>;
 				status = "disabled";
 
 				adc2: adc@0 {
@@ -439,6 +597,7 @@
 				interrupts = <GIC_SPI 38 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&rcc USART1_K>;
 				resets = <&rcc USART1_R>;
+				access-controllers = <&etzpc STM32MP1_ETZPC_USART1_ID>;
 				status = "disabled";
 			};
 
@@ -448,6 +607,7 @@
 				interrupts = <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&rcc USART2_K>;
 				resets = <&rcc USART2_R>;
+				access-controllers = <&etzpc STM32MP1_ETZPC_USART2_ID>;
 				status = "disabled";
 			};
 
@@ -460,6 +620,7 @@
 				#size-cells = <0>;
 				st,syscfg-fmp = <&syscfg 0x4 0x4>;
 				i2c-analog-filter;
+				access-controllers = <&etzpc STM32MP1_ETZPC_I2C3_ID>;
 				status = "disabled";
 			};
 
@@ -472,6 +633,7 @@
 				#size-cells = <0>;
 				st,syscfg-fmp = <&syscfg 0x4 0x8>;
 				i2c-analog-filter;
+				access-controllers = <&etzpc STM32MP1_ETZPC_I2C4_ID>;
 				status = "disabled";
 			};
 
@@ -484,6 +646,7 @@
 				#size-cells = <0>;
 				st,syscfg-fmp = <&syscfg 0x4 0x10>;
 				i2c-analog-filter;
+				access-controllers = <&etzpc STM32MP1_ETZPC_I2C5_ID>;
 				status = "disabled";
 			};
 
@@ -495,6 +658,8 @@
 				interrupts = <GIC_SPI 104 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&rcc TIM12_K>;
 				clock-names = "int";
+				access-controllers = <&etzpc STM32MP1_ETZPC_TIM12_ID>;
+				status = "disabled";
 
 				counter {
 					compatible = "st,stm32-timer-counter";
@@ -509,6 +674,7 @@
 				reg = <0x4c008000 0x400>;
 				clocks = <&rcc TIM13_K>;
 				clock-names = "int";
+				access-controllers = <&etzpc STM32MP1_ETZPC_TIM13_ID>;
 				status = "disabled";
 			};
 
@@ -519,6 +685,7 @@
 				reg = <0x4c009000 0x400>;
 				clocks = <&rcc TIM14_K>;
 				clock-names = "int";
+				access-controllers = <&etzpc STM32MP1_ETZPC_TIM14_ID>;
 				status = "disabled";
 			};
 
@@ -530,6 +697,7 @@
 				interrupts = <GIC_SPI 101 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&rcc TIM15_K>;
 				clock-names = "int";
+				access-controllers = <&etzpc STM32MP1_ETZPC_TIM15_ID>;
 				status = "disabled";
 
 				counter {
@@ -545,8 +713,8 @@
 				reg = <0x4c00b000 0x400>;
 				clocks = <&rcc TIM16_K>;
 				clock-names = "int";
+				access-controllers = <&etzpc STM32MP1_ETZPC_TIM16_ID>;
 				status = "disabled";
-
 			};
 
 			timers17: timer@4c00c000 {
@@ -556,6 +724,7 @@
 				reg = <0x4c00c000 0x400>;
 				clocks = <&rcc TIM17_K>;
 				clock-names = "int";
+				access-controllers = <&etzpc STM32MP1_ETZPC_TIM17_ID>;
 				status = "disabled";
 			};
 
@@ -567,6 +736,7 @@
 				interrupts = <GIC_SPI 116 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&rcc LPTIM2_K>;
 				clock-names = "mux";
+				access-controllers = <&etzpc STM32MP1_ETZPC_LPTIM2_ID>;
 				status = "disabled";
 			};
 
@@ -578,6 +748,7 @@
 				interrupts = <GIC_SPI 117 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&rcc LPTIM3_K>;
 				clock-names = "mux";
+				access-controllers = <&etzpc STM32MP1_ETZPC_LPTIM3_ID>;
 				status = "disabled";
 
 				counter {
@@ -593,6 +764,7 @@
 				regulator-min-microvolt = <1650000>;
 				regulator-max-microvolt = <2500000>;
 				clocks = <&rcc VREF>;
+				access-controllers = <&etzpc STM32MP1_ETZPC_VREFBUF_ID>;
 				status = "disabled";
 			};
 
@@ -602,6 +774,7 @@
 				interrupts = <GIC_SPI 81 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&rcc HASH1>;
 				resets = <&rcc HASH1_R>;
+				access-controllers = <&etzpc STM32MP1_ETZPC_HASH_ID>;
 				status = "disabled";
 			};
 
@@ -610,6 +783,7 @@
 				reg = <0x54004000 0x400>;
 				clocks = <&rcc RNG1_K>;
 				resets = <&rcc RNG1_R>;
+				access-controllers = <&etzpc STM32MP1_ETZPC_RNG_ID>;
 				status = "disabled";
 			};
 
@@ -619,12 +793,14 @@
 				interrupts = <GIC_SPI 126 IRQ_TYPE_LEVEL_HIGH>;
 				clocks = <&rcc IWDG1>, <&rcc CK_LSI>;
 				clock-names = "pclk", "lsi";
+				access-controllers = <&etzpc STM32MP1_ETZPC_IWDG1_ID>;
 				status = "disabled";
 			};
 
 			stgen: stgen@5c008000 {
 				compatible = "st,stm32-stgen";
 				reg = <0x5C008000 0x1000>;
+				access-controllers = <&etzpc STM32MP1_ETZPC_STGENC_ID>;
 			};
 		};
 	};

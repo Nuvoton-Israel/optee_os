@@ -14,7 +14,6 @@
 #include <kernel/tee_misc.h>
 #include <kernel/tlb_helpers.h>
 #include <kernel/user_mode_ctx.h>
-#include <kernel/virtualization.h>
 #include <mm/core_memprot.h>
 #include <mm/core_mmu.h>
 #include <mm/mobj.h>
@@ -76,7 +75,7 @@ static vaddr_t select_va_in_range(const struct vm_region *prev_reg,
 	if (ADD_OVERFLOW(prev_reg->va, prev_reg->size, &begin_va) ||
 	    ADD_OVERFLOW(begin_va, pad_begin, &begin_va) ||
 	    ADD_OVERFLOW(begin_va, pad, &begin_va) ||
-	    ROUNDUP_OVERFLOW(begin_va, granul, &begin_va))
+	    ROUNDUP2_OVERFLOW(begin_va, granul, &begin_va))
 		return 0;
 
 	if (reg->va) {
@@ -98,7 +97,7 @@ static vaddr_t select_va_in_range(const struct vm_region *prev_reg,
 	if (ADD_OVERFLOW(begin_va, reg->size, &end_va) ||
 	    ADD_OVERFLOW(end_va, pad_end, &end_va) ||
 	    ADD_OVERFLOW(end_va, pad, &end_va) ||
-	    ROUNDUP_OVERFLOW(end_va, granul, &end_va))
+	    ROUNDUP2_OVERFLOW(end_va, granul, &end_va))
 		return 0;
 
 	if (end_va <= next_reg->va) {
@@ -1076,53 +1075,6 @@ out:
 	return res;
 }
 
-TEE_Result vm_add_rwmem(struct user_mode_ctx *uctx, struct mobj *mobj,
-			vaddr_t *va)
-{
-	TEE_Result res = TEE_SUCCESS;
-	struct vm_region *reg = NULL;
-
-	if (!mobj_is_secure(mobj) || !mobj_is_paged(mobj))
-		return TEE_ERROR_BAD_PARAMETERS;
-
-	reg = calloc(1, sizeof(*reg));
-	if (!reg)
-		return TEE_ERROR_OUT_OF_MEMORY;
-
-	reg->mobj = mobj;
-	reg->offset = 0;
-	reg->va = 0;
-	reg->size = ROUNDUP(mobj->size, SMALL_PAGE_SIZE);
-	reg->attr = TEE_MATTR_SECURE;
-
-	res = umap_add_region(&uctx->vm_info, reg, 0, 0, 0);
-	if (res) {
-		free(reg);
-		return res;
-	}
-
-	res = alloc_pgt(uctx);
-	if (res)
-		umap_remove_region(&uctx->vm_info, reg);
-	else
-		*va = reg->va;
-
-	return res;
-}
-
-void vm_rem_rwmem(struct user_mode_ctx *uctx, struct mobj *mobj, vaddr_t va)
-{
-	struct vm_region *r = NULL;
-
-	TAILQ_FOREACH(r, &uctx->vm_info.regions, link) {
-		if (r->mobj == mobj && r->va == va) {
-			rem_um_region(uctx, r);
-			umap_remove_region(&uctx->vm_info, r);
-			return;
-		}
-	}
-}
-
 void vm_info_final(struct user_mode_ctx *uctx)
 {
 	if (!uctx->vm_info.asid)
@@ -1135,10 +1087,11 @@ void vm_info_final(struct user_mode_ctx *uctx)
 	tlbi_asid(uctx->vm_info.asid);
 
 	asid_free(uctx->vm_info.asid);
+	uctx->vm_info.asid = 0;
+
 	while (!TAILQ_EMPTY(&uctx->vm_info.regions))
 		umap_remove_region(&uctx->vm_info,
 				   TAILQ_FIRST(&uctx->vm_info.regions));
-	memset(&uctx->vm_info, 0, sizeof(uctx->vm_info));
 }
 
 /* return true only if buffer fits inside TA private memory */
@@ -1164,7 +1117,7 @@ bool vm_buf_intersects_um_private(const struct user_mode_ctx *uctx,
 	struct vm_region *r = NULL;
 
 	TAILQ_FOREACH(r, &uctx->vm_info.regions, link) {
-		if (r->attr & VM_FLAGS_NONPRIV)
+		if (r->flags & VM_FLAGS_NONPRIV)
 			continue;
 		if (core_is_buffer_intersect((vaddr_t)va, size, r->va, r->size))
 			return true;
@@ -1225,7 +1178,7 @@ static TEE_Result tee_mmu_user_va2pa_attr(const struct user_mode_ctx *uctx,
 			assert(!granule || IS_POWER_OF_TWO(granule));
 
 			offset = region->offset +
-				 ROUNDDOWN((vaddr_t)ua - region->va, granule);
+				 ROUNDDOWN2((vaddr_t)ua - region->va, granule);
 
 			res = mobj_get_pa(region->mobj, offset, granule, &p);
 			if (res != TEE_SUCCESS)
@@ -1309,6 +1262,9 @@ TEE_Result vm_check_access_rights(const struct user_mode_ctx *uctx,
 	    (flags & TEE_MEMORY_ACCESS_SECURE))
 		return TEE_ERROR_ACCESS_DENIED;
 
+	if (len == 0)
+		return TEE_SUCCESS;
+
 	/*
 	 * Rely on TA private memory test to check if address range is private
 	 * to TA or not.
@@ -1317,7 +1273,7 @@ TEE_Result vm_check_access_rights(const struct user_mode_ctx *uctx,
 	   !vm_buf_is_inside_um_private(uctx, (void *)uaddr, len))
 		return TEE_ERROR_ACCESS_DENIED;
 
-	for (a = ROUNDDOWN(uaddr, addr_incr); a < end_addr; a += addr_incr) {
+	for (a = ROUNDDOWN2(uaddr, addr_incr); a < end_addr; a += addr_incr) {
 		uint32_t attr;
 		TEE_Result res;
 

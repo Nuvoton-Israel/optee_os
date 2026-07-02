@@ -39,15 +39,17 @@ struct utee_params;
 TEE_Result __utee_entry(unsigned long func, unsigned long session_id,
 			struct utee_params *up, unsigned long cmd_id);
 
-void __noreturn _C_FUNCTION(__ta_entry)(unsigned long func,
-					unsigned long session_id,
-					struct utee_params *up,
-					unsigned long cmd_id);
+void __noreturn __no_stack_protector
+_C_FUNCTION(__ta_entry)(unsigned long func,
+			unsigned long session_id,
+			struct utee_params *up,
+			unsigned long cmd_id);
 
-void __noreturn _C_FUNCTION(__ta_entry)(unsigned long func,
-					unsigned long session_id,
-					struct utee_params *up,
-					unsigned long cmd_id)
+void __noreturn __no_stack_protector
+_C_FUNCTION(__ta_entry)(unsigned long func,
+			unsigned long session_id,
+			struct utee_params *up,
+			unsigned long cmd_id)
 {
 	static bool stack_canary_inited;
 	TEE_Result res = TEE_ERROR_GENERIC;
@@ -139,6 +141,9 @@ const struct user_ta_property ta_props[] = {
 
 	{TA_PROP_STR_KEEP_ALIVE, USER_TA_PROP_TYPE_BOOL,
 	 &(const bool){(TA_FLAGS & TA_FLAG_INSTANCE_KEEP_ALIVE) != 0}},
+
+	{TA_PROP_STR_KEEP_CRASHED, USER_TA_PROP_TYPE_BOOL,
+	 &(const bool){(TA_FLAGS & TA_FLAG_INSTANCE_KEEP_CRASHED) != 0}},
 
 	{TA_PROP_STR_DATA_SIZE, USER_TA_PROP_TYPE_U32,
 	 &(const uint32_t){TA_DATA_SIZE}},

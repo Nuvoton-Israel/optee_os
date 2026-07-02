@@ -3,9 +3,11 @@
  * Copyright (c) 2014, STMicroelectronics International N.V.
  */
 
-#ifndef TEE_FS_H
-#define TEE_FS_H
+#ifndef __TEE_TEE_FS_H
+#define __TEE_TEE_FS_H
 
+#include <pta_stats.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <tee_api_defines_extensions.h>
@@ -60,6 +62,10 @@ extern const struct tee_file_operations rpmb_fs_ops;
 
 TEE_Result tee_rpmb_fs_raw_open(const char *fname, bool create,
 				struct tee_file_handle **fh);
+TEE_Result tee_rpmb_reinit(void);
+
+/* Ger RPMB memory allocation statistics */
+TEE_Result rpmb_mem_stats(struct pta_stats_alloc *stats, bool reset);
 
 /**
  * Weak function which can be overridden by platforms to indicate that the RPMB
@@ -67,6 +73,17 @@ TEE_Result tee_rpmb_fs_raw_open(const char *fname, bool create,
  * prevent a RPMB key write in the wrong state.
  */
 bool plat_rpmb_key_is_ready(void);
+#else
+static inline TEE_Result tee_rpmb_reinit(void)
+{
+	return TEE_ERROR_STORAGE_NOT_AVAILABLE;
+}
+
+static inline TEE_Result rpmb_mem_stats(struct pta_stats_alloc *stats __unused,
+					bool reset __unused)
+{
+	return TEE_ERROR_STORAGE_NOT_AVAILABLE;
+}
 #endif
 
 /*
@@ -99,4 +116,4 @@ tee_svc_storage_file_ops(uint32_t storage_id)
 	}
 }
 
-#endif /*TEE_FS_H*/
+#endif /*__TEE_TEE_FS_H*/

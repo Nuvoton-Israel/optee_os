@@ -112,7 +112,7 @@ void plat_primary_init_early(void)
 }
 #endif
 
-void console_init(void)
+void plat_console_init(void)
 {
 #ifdef CFG_PL011
 	/*
@@ -141,20 +141,13 @@ static TEE_Result get_gic_base_addr_from_dt(paddr_t *gic_addr)
 		gic_offset = fdt_path_offset(fdt,
 					     "/interrupt-controller@6000000");
 
-	if (gic_offset > 0) {
-		paddr = fdt_reg_base_address(fdt, gic_offset);
-		if (paddr == DT_INFO_INVALID_REG) {
-			EMSG("GIC: Unable to get base addr from DT");
-			return TEE_ERROR_ITEM_NOT_FOUND;
-		}
-
-		size = fdt_reg_size(fdt, gic_offset);
-		if (size == DT_INFO_INVALID_REG_SIZE) {
-			EMSG("GIC: Unable to get size of base addr from DT");
-			return TEE_ERROR_ITEM_NOT_FOUND;
-		}
-	} else {
+	if (gic_offset < 0) {
 		EMSG("Unable to get gic offset node");
+		return TEE_ERROR_ITEM_NOT_FOUND;
+	}
+
+	if (fdt_reg_info(fdt, gic_offset, &paddr, &size)) {
+		EMSG("GIC: Unable to get base addr or size from DT");
 		return TEE_ERROR_ITEM_NOT_FOUND;
 	}
 
@@ -215,9 +208,7 @@ void boot_primary_init_intc(void)
 	gic_init(gic_base + gicc_offset, gic_base + gicd_offset);
 }
 
-#if !defined(CFG_WITH_ARM_TRUSTED_FW)
 void boot_secondary_init_intc(void)
 {
-	gic_cpu_init();
+	gic_init_per_cpu();
 }
-#endif

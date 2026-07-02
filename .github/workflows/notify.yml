@@ -1,0 +1,46 @@
+# The purpose of this workflow is to run the scripts/notify_maintainers.py
+# for pull requests against the OP-TEE OS main repository in a secure way.
+# It runs on the pull_request_target event, which grants write permission
+# (issues: write) using the default short-lived GITHUB_TOKEN. Due to this
+# write access to PRs and issues, to prevent security issues the
+# pull_request_target event also checks out the code in the target branch,
+# not the code from the PR. This code can therefore be trusted.
+
+name: Maintainer notification
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  notify-maintainers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+      - name: Install python3-github
+        run: |
+          sudo apt-get update
+          sudo apt-get install python3-github
+      - name: Compute maintainers
+        id: compute
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/notify_maintainers.py | tee output.txt
+          grep message= output.txt >> $GITHUB_OUTPUT
+      - name: Comment on PR
+        if: steps.compute.outputs.message != ''
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const message = "${{ steps.compute.outputs.message }}";
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: message
+            });

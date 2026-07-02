@@ -9,7 +9,6 @@
 #include <kernel/dt_driver.h>
 #include <kernel/panic.h>
 #include <kernel/tee_time.h>
-#include <rng_support.h>
 #include <stdlib.h>
 #include <string_ext.h>
 #include <string.h>
@@ -172,7 +171,7 @@ __weak void plat_prng_add_jitter_entropy(enum crypto_rng_src sid,
 		crypto_rng_add_event(sid, pnum, &current, sizeof(current));
 }
 
-__weak void plat_rng_init(void)
+void __plat_rng_init(void)
 {
 	TEE_Result res = TEE_SUCCESS;
 	TEE_Time t;
@@ -201,6 +200,15 @@ __weak void plat_rng_init(void)
 	}
 }
 
+/*
+ * Override this in your platform code. This default implementation only seeds
+ * the random number generator from an easily predictable timestamp value or a
+ * constant value. It is not suitable for a secure environment.
+ */
+#ifdef CFG_INSECURE
+void plat_rng_init(void) __weak __alias("__plat_rng_init");
+#endif
+
 static TEE_Result tee_cryp_init(void)
 {
 	TEE_Result res = crypto_init();
@@ -215,4 +223,4 @@ static TEE_Result tee_cryp_init(void)
 
 	return TEE_SUCCESS;
 }
-service_init(tee_cryp_init);
+service_init_crypto(tee_cryp_init);

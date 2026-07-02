@@ -37,11 +37,10 @@
 static __noprof struct ftrace_buf *get_fbuf(void)
 {
 #if defined(__KERNEL__)
-	short int ct = thread_get_id_may_fail();
 	struct ts_session *s = NULL;
 	struct thread_specific_data *tsd = NULL;
 
-	if (ct == -1)
+	if (!thread_is_in_normal_mode())
 		return NULL;
 
 	if (!(core_mmu_user_va_range_is_defined() &&
@@ -52,6 +51,9 @@ static __noprof struct ftrace_buf *get_fbuf(void)
 	s = TAILQ_FIRST(&tsd->sess_stack);
 
 	if (!s || tsd->ctx != s->ctx)
+		return NULL;
+
+	if (!is_ta_ctx(s->ctx) || to_ta_ctx(s->ctx)->panicked)
 		return NULL;
 
 	if (s->fbuf && s->fbuf->syscall_trace_enabled &&

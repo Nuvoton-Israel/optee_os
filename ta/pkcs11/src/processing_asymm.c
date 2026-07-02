@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <compiler.h>
 #include <mbedtls/nist_kw.h>
+#include <string_ext.h>
 #include <tee_api_defines.h>
 #include <tee_internal_api.h>
 #include <tee_internal_api_extensions.h>
@@ -22,6 +23,7 @@ bool processing_is_tee_asymm(uint32_t proc_id)
 	/* RSA flavors */
 	case PKCS11_CKM_RSA_AES_KEY_WRAP:
 	case PKCS11_CKM_RSA_PKCS:
+	case PKCS11_CKM_RSA_X_509:
 	case PKCS11_CKM_RSA_PKCS_OAEP:
 	case PKCS11_CKM_RSA_PKCS_PSS:
 	case PKCS11_CKM_MD5_RSA_PKCS:
@@ -66,6 +68,7 @@ pkcs2tee_algorithm(uint32_t *tee_id, uint32_t *tee_hash_id,
 		{ PKCS11_CKM_RSA_PKCS, TEE_ALG_RSAES_PKCS1_V1_5, 0 },
 		{ PKCS11_CKM_RSA_PKCS_OAEP, 1, 0 },
 		{ PKCS11_CKM_RSA_PKCS_PSS, 1, 0 },
+		{ PKCS11_CKM_RSA_X_509, TEE_ALG_RSA_NOPAD, 0 },
 		{ PKCS11_CKM_MD5_RSA_PKCS, TEE_ALG_RSASSA_PKCS1_V1_5_MD5,
 		  TEE_ALG_MD5 },
 		{ PKCS11_CKM_SHA1_RSA_PKCS, TEE_ALG_RSASSA_PKCS1_V1_5_SHA1,
@@ -222,17 +225,38 @@ allocate_tee_operation(struct pkcs11_session *session,
 	struct active_processing *processing = session->processing;
 
 	assert(processing->tee_op_handle == TEE_HANDLE_NULL);
-	assert(processing->tee_hash_op_handle == TEE_HANDLE_NULL);
+	assert(processing->tee_op_handle2 == TEE_HANDLE_NULL);
 
 	if (pkcs2tee_algorithm(&algo, &hash_algo, function, params, obj))
 		return PKCS11_CKR_FUNCTION_FAILED;
 
-	pkcs2tee_mode(&mode, function);
+	/*
+	 * PKCS#11 allows Sign/Verify with CKM_RSA_X_509 while GP TEE API
+	 * only permits Encrypt/Decrypt with TEE_ALG_RSA_NOPAD.
+	 * For other algorithm, use simple 1-to-1 ID conversion pkcs2tee_mode().
+	 */
+	if (params->id == PKCS11_CKM_RSA_X_509) {
+		assert(!hash_algo);
+		switch (function) {
+		case PKCS11_FUNCTION_ENCRYPT:
+		case PKCS11_FUNCTION_VERIFY:
+			mode = TEE_MODE_ENCRYPT;
+			break;
+		case PKCS11_FUNCTION_DECRYPT:
+		case PKCS11_FUNCTION_SIGN:
+			mode = TEE_MODE_DECRYPT;
+			break;
+		default:
+			TEE_Panic(0);
+		}
+	} else {
+		pkcs2tee_mode(&mode, function);
+	}
 
 	if (hash_algo) {
 		pkcs2tee_mode(&hash_mode, PKCS11_FUNCTION_DIGEST);
 
-		res = TEE_AllocateOperation(&processing->tee_hash_op_handle,
+		res = TEE_AllocateOperation(&processing->tee_op_handle2,
 					    hash_algo, hash_mode, 0);
 		if (res) {
 			EMSG("TEE_AllocateOp. failed %#"PRIx32" %#"PRIx32,
@@ -255,9 +279,9 @@ allocate_tee_operation(struct pkcs11_session *session,
 		return PKCS11_CKR_MECHANISM_INVALID;
 
 	if (res != TEE_SUCCESS &&
-	    processing->tee_hash_op_handle != TEE_HANDLE_NULL) {
-		TEE_FreeOperation(session->processing->tee_hash_op_handle);
-		processing->tee_hash_op_handle = TEE_HANDLE_NULL;
+	    processing->tee_op_handle2 != TEE_HANDLE_NULL) {
+		TEE_FreeOperation(session->processing->tee_op_handle2);
+		processing->tee_op_handle2 = TEE_HANDLE_NULL;
 		processing->tee_hash_algo = 0;
 	}
 
@@ -306,6 +330,12 @@ static enum pkcs11_rc load_tee_key(struct pkcs11_session *session,
 				break;
 			}
 			break;
+		case PKCS11_CKK_EC_EDWARDS:
+			assert((obj->key_type == TEE_TYPE_ED25519_PUBLIC_KEY &&
+				class == PKCS11_CKO_PUBLIC_KEY) ||
+			       (obj->key_type == TEE_TYPE_ED25519_KEYPAIR &&
+				class == PKCS11_CKO_PRIVATE_KEY));
+			goto key_ready;
 		default:
 			assert(0);
 			break;
@@ -385,6 +415,9 @@ init_tee_operation(struct pkcs11_session *session,
 	struct active_processing *proc = session->processing;
 
 	switch (proc_params->id) {
+	case PKCS11_CKM_RSA_X_509:
+		rc = pkcs2tee_rsa_nopad_context(proc);
+		break;
 	case PKCS11_CKM_RSA_PKCS_PSS:
 	case PKCS11_CKM_SHA1_RSA_PKCS_PSS:
 	case PKCS11_CKM_SHA224_RSA_PKCS_PSS:
@@ -457,10 +490,12 @@ enum pkcs11_rc step_asymm_operation(struct pkcs11_session *session,
 	void *in2_buf = NULL;
 	void *out_buf = NULL;
 	void *hash_buf = NULL;
+	void *temp_buf = NULL;
 	uint32_t in_size = 0;
 	uint32_t in2_size = 0;
 	size_t out_size = 0;
 	size_t hash_size = 0;
+	size_t temp_size = 0;
 	TEE_Attribute *tee_attrs = NULL;
 	size_t tee_attrs_count = 0;
 	bool output_data = false;
@@ -610,10 +645,9 @@ enum pkcs11_rc step_asymm_operation(struct pkcs11_session *session,
 		case PKCS11_CKM_SHA256_RSA_PKCS_PSS:
 		case PKCS11_CKM_SHA384_RSA_PKCS_PSS:
 		case PKCS11_CKM_SHA512_RSA_PKCS_PSS:
-			assert(proc->tee_hash_op_handle != TEE_HANDLE_NULL);
+			assert(proc->tee_op_handle2 != TEE_HANDLE_NULL);
 
-			TEE_DigestUpdate(proc->tee_hash_op_handle, in_buf,
-					 in_size);
+			TEE_DigestUpdate(proc->tee_op_handle2, in_buf, in_size);
 			rc = PKCS11_CKR_OK;
 			break;
 		default:
@@ -649,16 +683,15 @@ enum pkcs11_rc step_asymm_operation(struct pkcs11_session *session,
 	case PKCS11_CKM_SHA256_RSA_PKCS_PSS:
 	case PKCS11_CKM_SHA384_RSA_PKCS_PSS:
 	case PKCS11_CKM_SHA512_RSA_PKCS_PSS:
-		assert(proc->tee_hash_op_handle != TEE_HANDLE_NULL);
+		assert(proc->tee_op_handle2 != TEE_HANDLE_NULL);
 
 		hash_size = TEE_ALG_GET_DIGEST_SIZE(proc->tee_hash_algo);
 		hash_buf = TEE_Malloc(hash_size, 0);
 		if (!hash_buf)
 			return PKCS11_CKR_DEVICE_MEMORY;
 
-		res = TEE_DigestDoFinal(proc->tee_hash_op_handle,
-					in_buf, in_size, hash_buf,
-					&hash_size);
+		res = TEE_DigestDoFinal(proc->tee_op_handle2, in_buf, in_size,
+					hash_buf, &hash_size);
 
 		rc = tee2pkcs_error(res);
 		if (rc != PKCS11_CKR_OK)
@@ -714,6 +747,7 @@ enum pkcs11_rc step_asymm_operation(struct pkcs11_session *session,
 		}
 		break;
 	case PKCS11_CKM_RSA_PKCS:
+	case PKCS11_CKM_RSA_X_509:
 	case PKCS11_CKM_MD5_RSA_PKCS:
 	case PKCS11_CKM_SHA1_RSA_PKCS:
 	case PKCS11_CKM_SHA224_RSA_PKCS:
@@ -797,6 +831,135 @@ enum pkcs11_rc step_asymm_operation(struct pkcs11_session *session,
 			break;
 		}
 		break;
+
+	case PKCS11_CKM_RSA_X_509:
+		switch (function) {
+		case PKCS11_FUNCTION_ENCRYPT:
+			/*
+			 * Input message size shall be at most the key size
+			 * As encrypting with raw RSA can be unsafe, it
+			 * remains the responsibility of the client to
+			 * prolerly pad the message for safe usage.
+			 */
+			if (in_size > sz) {
+				rc = PKCS11_CKR_DATA_LEN_RANGE;
+				break;
+			}
+			res = TEE_AsymmetricEncrypt(proc->tee_op_handle,
+						    tee_attrs, tee_attrs_count,
+						    in_buf, in_size,
+						    out_buf, &out_size);
+			output_data = true;
+			rc = tee2pkcs_error(res);
+			if (rc == PKCS11_CKR_ARGUMENTS_BAD)
+				rc = PKCS11_CKR_DATA_LEN_RANGE;
+			break;
+		case PKCS11_FUNCTION_DECRYPT:
+			/*
+			 * Input message size shall be at most the key size
+			 * As decrypting with raw RSA can be unsafe, it
+			 * remains the responsibility of the encryption
+			 * instance to have prolerly padded its message.
+			 */
+			if (in_size > sz) {
+				rc = PKCS11_CKR_ENCRYPTED_DATA_LEN_RANGE;
+				break;
+			}
+
+			res = TEE_AsymmetricDecrypt(proc->tee_op_handle,
+						    tee_attrs, tee_attrs_count,
+						    in_buf, in_size,
+						    out_buf, &out_size);
+			output_data = true;
+			rc = tee2pkcs_error(res);
+			if (rc == PKCS11_CKR_ARGUMENTS_BAD)
+				rc = PKCS11_CKR_ENCRYPTED_DATA_LEN_RANGE;
+			break;
+		case PKCS11_FUNCTION_SIGN:
+			/*
+			 * GP TEE API only allows Decrypt, not Verify operation,
+			 * on TEE_ALG_RSA_NOPAD. Be a bit strict on the size and
+			 * content of the message and ensure the generate
+			 * signature as the size of the modulus (@sz here).
+			 *
+			 * It remains the responsibility of the client to have
+			 * a safe padding scheme for the provided message data.
+			 */
+			if (in_size != sz) {
+				EMSG("Invalid data size %"PRIu32" != %zu",
+				     in_size, sz);
+				rc = PKCS11_CKR_DATA_LEN_RANGE;
+				break;
+			}
+
+			if (out_size < sz) {
+				rc = PKCS11_CKR_BUFFER_TOO_SMALL;
+				out_size = sz;
+				output_data = true;
+				break;
+			}
+
+			temp_size = sz;
+			temp_buf = proc->extra_ctx;
+			res = TEE_AsymmetricDecrypt(proc->tee_op_handle,
+						    tee_attrs, tee_attrs_count,
+						    in_buf, in_size,
+						    temp_buf, &temp_size);
+			if (!res && temp_size != sz) {
+				EMSG("CMK_RSA_X509: signature size %zu != %zu",
+				     temp_size, sz);
+				rc = PKCS11_CKR_DATA_INVALID;
+				break;
+			}
+			if (!res) {
+				TEE_MemMove(out_buf, temp_buf, sz);
+				TEE_MemFill(temp_buf, 0xa5, sz);
+			}
+			output_data = true;
+			rc = tee2pkcs_error(res);
+			out_size = sz;
+			break;
+		case PKCS11_FUNCTION_VERIFY:
+			/*
+			 * GP TEE API only allows Encrypt, not Verify operation,
+			 * on TEE_ALG_RSA_NOPAD. Encrypt signature in
+			 * temporary buffer preallocated to the size of the key.
+			 */
+			temp_size = sz;
+			temp_buf = proc->extra_ctx;
+			res = TEE_AsymmetricEncrypt(proc->tee_op_handle,
+						    tee_attrs, tee_attrs_count,
+						    in2_buf, in2_size,
+						    temp_buf, &temp_size);
+			rc = tee2pkcs_error(res);
+			if (rc == PKCS11_CKR_OK) {
+				/*
+				 * Skip nul bytes heading message before
+				 * comparing encrypted signature.
+				 */
+				char *ptr = in_buf;
+				size_t n = 0;
+
+				for (n = 0; n < in_size; n++)
+					if (ptr[n])
+						break;
+				in_size -= n;
+				ptr += n;
+				if (n > 1)
+					IMSG("Unsafe signature: skip %zu bytes",
+					     n);
+
+				if (temp_size != in_size ||
+				    consttime_memcmp(temp_buf, ptr, in_size))
+					rc = PKCS11_CKR_SIGNATURE_INVALID;
+			}
+			break;
+		default:
+			TEE_Panic(function);
+			break;
+		}
+		break;
+
 	case PKCS11_CKM_ECDSA_SHA1:
 	case PKCS11_CKM_ECDSA_SHA224:
 	case PKCS11_CKM_ECDSA_SHA256:

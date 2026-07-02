@@ -22,7 +22,6 @@
 #include <tee/entry_fast.h>
 #include <tee/entry_std.h>
 #include <tee/tee_cryp_utl.h>
-#include <tee/tee_fs_rpc.h>
 
 static bool thread_prealloc_rpc_cache;
 static unsigned int thread_rpc_pnum;
@@ -35,7 +34,7 @@ void thread_handle_fast_smc(struct thread_smc_args *args)
 	thread_check_canaries();
 
 	if (IS_ENABLED(CFG_NS_VIRTUALIZATION) &&
-	    virt_set_guest(args->a7)) {
+	    virt_set_guest(args->a7) && args->a7 != HYP_CLNT_ID) {
 		args->a0 = OPTEE_SMC_RETURN_ENOTAVAIL;
 		goto out;
 	}
@@ -681,26 +680,21 @@ struct mobj *thread_rpc_alloc_payload(size_t size)
 
 struct mobj *thread_rpc_alloc_kernel_payload(size_t size)
 {
-	/*
-	 * Error out early since kernel private dynamic shared memory
-	 * allocations don't currently use the `OPTEE_MSG_ATTR_NONCONTIG` bit
-	 * and therefore cannot be larger than a page.
-	 */
-	if (IS_ENABLED(CFG_CORE_DYN_SHM) && size > SMALL_PAGE_SIZE)
-		return NULL;
-
 	return thread_rpc_alloc(size, 8, OPTEE_RPC_SHM_TYPE_KERNEL);
 }
 
 void thread_rpc_free_kernel_payload(struct mobj *mobj)
 {
-	thread_rpc_free(OPTEE_RPC_SHM_TYPE_KERNEL, mobj_get_cookie(mobj), mobj);
+	if (mobj)
+		thread_rpc_free(OPTEE_RPC_SHM_TYPE_KERNEL,
+				mobj_get_cookie(mobj), mobj);
 }
 
 void thread_rpc_free_payload(struct mobj *mobj)
 {
-	thread_rpc_free(OPTEE_RPC_SHM_TYPE_APPL, mobj_get_cookie(mobj),
-			mobj);
+	if (mobj)
+		thread_rpc_free(OPTEE_RPC_SHM_TYPE_APPL, mobj_get_cookie(mobj),
+				mobj);
 }
 
 struct mobj *thread_rpc_alloc_global_payload(size_t size)

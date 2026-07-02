@@ -7,6 +7,8 @@
 #include <kernel/boot.h>
 #include <kernel/thread.h>
 #include <kernel/thread_private.h>
+#include <kernel/thread_private_arch.h>
+#include <mm/core_mmu_arch.h>
 #include <sm/pm.h>
 #include <sm/sm.h>
 #include <types_ext.h>
@@ -41,14 +43,15 @@ DEFINES
 	DEFINE(THREAD_CORE_LOCAL_R0, offsetof(struct thread_core_local, r[0]));
 	DEFINE(THREAD_CORE_LOCAL_SM_PM_CTX_PHYS,
 	       offsetof(struct thread_core_local, sm_pm_ctx_phys));
-	DEFINE(THREAD_CORE_LOCAL_SIZE, sizeof(struct thread_core_local));
 
 	DEFINE(SM_PM_CTX_SIZE, sizeof(struct sm_pm_ctx));
+	DEFINE(__STACK_TMP_OFFS, STACK_TMP_OFFS);
 #endif /*ARM32*/
 
 #ifdef ARM64
 	DEFINE(THREAD_SMC_ARGS_X0, offsetof(struct thread_smc_args, a0));
 	DEFINE(THREAD_SMC_ARGS_SIZE, sizeof(struct thread_smc_args));
+	DEFINE(THREAD_SMC_1_2_REGS_SIZE, sizeof(struct thread_smc_1_2_regs));
 
 	DEFINE(THREAD_SCALL_REG_X0, offsetof(struct thread_scall_regs, x0));
 	DEFINE(THREAD_SCALL_REG_X2, offsetof(struct thread_scall_regs, x2));
@@ -133,13 +136,22 @@ DEFINES
 
 	/* struct thread_core_local */
 	DEFINE(THREAD_CORE_LOCAL_TMP_STACK_VA_END,
-		offsetof(struct thread_core_local, tmp_stack_va_end));
+	       offsetof(struct thread_core_local, tmp_stack_va_end));
+#ifdef ARM32
+	DEFINE(THREAD_CORE_LOCAL_TMP_STACK_PA_END,
+	       offsetof(struct thread_core_local, tmp_stack_pa_end));
+#endif
 	DEFINE(THREAD_CORE_LOCAL_CURR_THREAD,
-		offsetof(struct thread_core_local, curr_thread));
+	       offsetof(struct thread_core_local, curr_thread));
 	DEFINE(THREAD_CORE_LOCAL_FLAGS,
-		offsetof(struct thread_core_local, flags));
+	       offsetof(struct thread_core_local, flags));
 	DEFINE(THREAD_CORE_LOCAL_ABT_STACK_VA_END,
-		offsetof(struct thread_core_local, abt_stack_va_end));
+	       offsetof(struct thread_core_local, abt_stack_va_end));
+	DEFINE(THREAD_CORE_LOCAL_SIZE, sizeof(struct thread_core_local));
+#if defined(ARM64) && defined(CFG_CORE_FFA)
+	DEFINE(THREAD_CORE_LOCAL_DIRECT_RESP_FID,
+	       offsetof(struct thread_core_local, direct_resp_fid));
+#endif
 
 	DEFINE(STACK_TMP_GUARD, STACK_CANARY_SIZE / 2 + STACK_TMP_OFFS);
 
@@ -157,4 +169,14 @@ DEFINES
 	       offsetof(struct boot_embdata, reloc_offset));
 	DEFINE(BOOT_EMBDATA_RELOC_LEN,
 	       offsetof(struct boot_embdata, reloc_len));
+
+#ifdef CORE_MMU_BASE_TABLE_OFFSET
+	/*
+	 * This define is too complex to be used as an argument for the
+	 * macros add_imm and sub_imm so evaluate it here.
+	 */
+	DEFINE(__CORE_MMU_BASE_TABLE_OFFSET, CORE_MMU_BASE_TABLE_OFFSET);
+#endif
+	DEFINE(__STACK_CANARY_SIZE, STACK_CANARY_SIZE);
+
 }

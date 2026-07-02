@@ -3,8 +3,8 @@
  * Copyright (c) 2017-2022, STMicroelectronics
  */
 
-#ifndef __STM32_BSEC_H
-#define __STM32_BSEC_H
+#ifndef __DRIVERS_STM32_BSEC_H
+#define __DRIVERS_STM32_BSEC_H
 
 #include <compiler.h>
 #include <stdint.h>
@@ -167,6 +167,16 @@ bool stm32_bsec_can_access_otp(uint32_t otp_id);
 bool stm32_bsec_nsec_can_access_otp(uint32_t otp_id);
 
 /*
+ * Return true if Hardware Debug Port (HDP) is enabled.
+ */
+bool stm32_bsec_hdp_is_enabled(void);
+
+/*
+ * Return true if coresight peripheral can be used.
+ */
+bool stm32_bsec_coresight_is_enabled(void);
+
+/*
  * Find and get OTP location from its name.
  * @name: sub-node name to look up.
  * @otp_id: pointer to output OTP number or NULL.
@@ -199,4 +209,4 @@ TEE_Result stm32_bsec_find_otp_by_phandle(const uint32_t phandle,
  */
 TEE_Result stm32_bsec_get_state(enum stm32_bsec_sec_state *sec_state);
 
-#endif /*__STM32_BSEC_H*/
+#endif /*__DRIVERS_STM32_BSEC_H*/

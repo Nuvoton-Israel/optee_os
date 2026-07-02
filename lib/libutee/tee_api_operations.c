@@ -132,7 +132,7 @@ TEE_Result TEE_AllocateOperation(TEE_OperationHandle *operation,
 		break;
 	}
 
-	/* Check algorithm mode (and maxKeySize for digests) */
+	/* Check algorithm mode */
 	switch (algorithm) {
 	case TEE_ALG_AES_CTS:
 	case TEE_ALG_AES_XTS:
@@ -276,8 +276,6 @@ TEE_Result TEE_AllocateOperation(TEE_OperationHandle *operation,
 	case TEE_ALG_SHAKE256:
 	case TEE_ALG_SM3:
 		if (mode != TEE_MODE_DIGEST)
-			return TEE_ERROR_NOT_SUPPORTED;
-		if (maxKeySize)
 			return TEE_ERROR_NOT_SUPPORTED;
 		/* v1.1: flags always set for digest operations */
 		handle_state |= TEE_HANDLE_FLAG_KEY_SET;
@@ -588,17 +586,14 @@ void TEE_ResetOperation(TEE_OperationHandle operation)
 	reset_operation_state(operation);
 }
 
-TEE_Result TEE_SetOperationKey(TEE_OperationHandle operation,
-			       TEE_ObjectHandle key)
+static TEE_Result set_operation_key(TEE_OperationHandle operation,
+				    TEE_ObjectHandle key)
 {
 	TEE_Result res;
 	uint32_t key_size = 0;
 	TEE_ObjectInfo key_info;
 
-	if (operation == TEE_HANDLE_NULL) {
-		res = TEE_ERROR_BAD_PARAMETERS;
-		goto out;
-	}
+	assert(operation);
 
 	if (key == TEE_HANDLE_NULL) {
 		/* Operation key cleared */
@@ -664,6 +659,16 @@ out:
 	return res;
 }
 
+TEE_Result TEE_SetOperationKey(TEE_OperationHandle operation,
+			       TEE_ObjectHandle key)
+{
+	if (operation == TEE_HANDLE_NULL ||
+	    operation->info.handleState & TEE_HANDLE_FLAG_INITIALIZED)
+		TEE_Panic(0);
+
+	return set_operation_key(operation, key);
+}
+
 TEE_Result __GP11_TEE_SetOperationKey(TEE_OperationHandle operation,
 				      TEE_ObjectHandle key)
 {
@@ -671,7 +676,7 @@ TEE_Result __GP11_TEE_SetOperationKey(TEE_OperationHandle operation,
 	    operation->operationState != TEE_OPERATION_STATE_INITIAL)
 		TEE_Panic(0);
 
-	return TEE_SetOperationKey(operation, key);
+	return set_operation_key(operation, key);
 }
 
 static TEE_Result set_operation_key2(TEE_OperationHandle operation,
@@ -683,10 +688,7 @@ static TEE_Result set_operation_key2(TEE_OperationHandle operation,
 	TEE_ObjectInfo key_info1;
 	TEE_ObjectInfo key_info2;
 
-	if (operation == TEE_HANDLE_NULL) {
-		res = TEE_ERROR_BAD_PARAMETERS;
-		goto out;
-	}
+	assert(operation);
 
 	/*
 	 * Key1/Key2 and/or are not initialized and
@@ -798,15 +800,6 @@ out:
 	return res;
 }
 
-TEE_Result TEE_SetOperationKey2(TEE_OperationHandle operation,
-				TEE_ObjectHandle key1, TEE_ObjectHandle key2)
-{
-	if (operation != TEE_HANDLE_NULL && key1 && key1 == key2)
-		return TEE_ERROR_SECURITY;
-
-	return set_operation_key2(operation, key1, key2);
-}
-
 TEE_Result __GP11_TEE_SetOperationKey2(TEE_OperationHandle operation,
 				       TEE_ObjectHandle key1,
 				       TEE_ObjectHandle key2)
@@ -816,6 +809,15 @@ TEE_Result __GP11_TEE_SetOperationKey2(TEE_OperationHandle operation,
 		TEE_Panic(0);
 
 	return set_operation_key2(operation, key1, key2);
+}
+
+TEE_Result TEE_SetOperationKey2(TEE_OperationHandle operation,
+				TEE_ObjectHandle key1, TEE_ObjectHandle key2)
+{
+	if (operation != TEE_HANDLE_NULL && key1 && key1 == key2)
+		return TEE_ERROR_SECURITY;
+
+	return __GP11_TEE_SetOperationKey2(operation, key1, key2);
 }
 
 void TEE_CopyOperation(TEE_OperationHandle dst_op, TEE_OperationHandle src_op)
@@ -839,7 +841,12 @@ void TEE_CopyOperation(TEE_OperationHandle dst_op, TEE_OperationHandle src_op)
 
 		if ((src_op->info.handleState &
 		     TEE_HANDLE_FLAG_EXPECT_TWO_KEYS) == 0) {
-			TEE_SetOperationKey(dst_op, key1);
+			/*
+			 * TEE_SetOperationKey() cannot operate on an operation
+			 * that has TEE_HANDLE_FLAG_INITIALIZED. Use the
+			 * internal function.
+			 */
+			set_operation_key(dst_op, key1);
 		} else {
 			TEE_SetOperationKey2(dst_op, key1, key2);
 		}
@@ -1117,9 +1124,15 @@ static TEE_Result tee_buffer_update(
 	/* If we can feed from buffer */
 	if ((op->buffer_offs > 0) &&
 	    ((op->buffer_offs + slen) >= (buffer_size + buffer_left))) {
-		l = ROUNDUP(op->buffer_offs + slen - buffer_size,
-				op->block_size);
+		l = ROUNDUP2(op->buffer_offs + slen - buffer_size,
+			     op->block_size);
 		l = MIN(op->buffer_offs, l);
+		/*
+		 * If we're buffering only a single block, process it
+		 * immediately.
+		 */
+		if (!op->buffer_two_blocks)
+			l = op->block_size;
 		tmp_dlen = dlen;
 		res = update_func(op->state, op->buffer, l, dst, &tmp_dlen);
 		if (res != TEE_SUCCESS)
@@ -1141,10 +1154,10 @@ static TEE_Result tee_buffer_update(
 
 	if (slen >= (buffer_size + buffer_left)) {
 		/* Buffer is empty, feed as much as possible from src */
-		if (op->info.algorithm == TEE_ALG_AES_CTS)
-			l = ROUNDUP(slen - buffer_size, op->block_size);
+		if (op->buffer_two_blocks)
+			l = ROUNDUP2(slen - buffer_size, op->block_size);
 		else
-			l = ROUNDUP(slen - buffer_size + 1, op->block_size);
+			l = ROUNDUP2(slen - buffer_size + 1, op->block_size);
 
 		tmp_dlen = dlen;
 		res = update_func(op->state, src, l, dst, &tmp_dlen);
@@ -1208,10 +1221,14 @@ TEE_Result TEE_CipherUpdate(TEE_OperationHandle operation, const void *srcData,
 		req_dlen = srcLen;
 	}
 	if (operation->buffer_two_blocks) {
-		if (req_dlen > operation->block_size * 2)
-			req_dlen -= operation->block_size * 2;
-		else
+		if (operation->buffer_offs + srcLen >
+		    operation->block_size * 2) {
+			req_dlen = operation->buffer_offs + srcLen -
+				   operation->block_size * 2;
+			req_dlen = ROUNDUP2(req_dlen, operation->block_size);
+		} else {
 			req_dlen = 0;
+		}
 	}
 	/*
 	 * Check that required destLen is big enough before starting to feed
@@ -1686,8 +1703,8 @@ static TEE_Result ae_update_helper(TEE_OperationHandle operation,
 	 * can't restore sync with this API.
 	 */
 	if (operation->block_size > 1) {
-		req_dlen = ROUNDDOWN(operation->buffer_offs + slen,
-				     operation->block_size);
+		req_dlen = ROUNDDOWN2(operation->buffer_offs + slen,
+				      operation->block_size);
 	} else {
 		req_dlen = slen;
 	}

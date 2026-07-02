@@ -13,6 +13,7 @@
 #include <kernel/dt.h>
 #include <kernel/huk_subkey.h>
 #include <kernel/mutex.h>
+#include <kernel/pm.h>
 #include <libfdt.h>
 #include <mm/core_memprot.h>
 #include <stdint.h>
@@ -142,6 +143,7 @@ static struct mutex saes_lock = MUTEX_INITIALIZER;
 static struct stm32_saes_platdata {
 	vaddr_t base;
 	struct clk *clk;
+	struct clk *clk_rng;
 	struct rstctrl *reset;
 } saes_pdata;
 
@@ -565,28 +567,28 @@ TEE_Result stm32_saes_init(struct stm32_saes_context *ctx, bool is_dec,
 	}
 
 	if (is_dec)
-		ctx->cr |= set_field_u32(ctx->cr, _SAES_CR_MODE_MASK,
-					 _SAES_CR_MODE_DEC);
+		ctx->cr = set_field_u32(ctx->cr, _SAES_CR_MODE_MASK,
+					_SAES_CR_MODE_DEC);
 	else
-		ctx->cr |= set_field_u32(ctx->cr, _SAES_CR_MODE_MASK,
-					 _SAES_CR_MODE_ENC);
+		ctx->cr = set_field_u32(ctx->cr, _SAES_CR_MODE_MASK,
+					_SAES_CR_MODE_ENC);
 
 	/* Save chaining mode */
 	switch (ch_mode) {
 	case STM32_SAES_MODE_ECB:
-		ctx->cr |= SET_CHAINING_MODE(ECB, ctx->cr);
+		ctx->cr = SET_CHAINING_MODE(ECB, ctx->cr);
 		break;
 	case STM32_SAES_MODE_CBC:
-		ctx->cr |= SET_CHAINING_MODE(CBC, ctx->cr);
+		ctx->cr = SET_CHAINING_MODE(CBC, ctx->cr);
 		break;
 	case STM32_SAES_MODE_CTR:
-		ctx->cr |= SET_CHAINING_MODE(CTR, ctx->cr);
+		ctx->cr = SET_CHAINING_MODE(CTR, ctx->cr);
 		break;
 	case STM32_SAES_MODE_GCM:
-		ctx->cr |= SET_CHAINING_MODE(GCM, ctx->cr);
+		ctx->cr = SET_CHAINING_MODE(GCM, ctx->cr);
 		break;
 	case STM32_SAES_MODE_CCM:
-		ctx->cr |= SET_CHAINING_MODE(CCM, ctx->cr);
+		ctx->cr = SET_CHAINING_MODE(CCM, ctx->cr);
 		break;
 	default:
 		return TEE_ERROR_BAD_PARAMETERS;
@@ -601,8 +603,8 @@ TEE_Result stm32_saes_init(struct stm32_saes_context *ctx, bool is_dec,
 	 *
 	 * But note that wrap key only accept _SAES_CR_DATATYPE_NONE.
 	 */
-	ctx->cr |= set_field_u32(ctx->cr, _SAES_CR_DATATYPE_MASK,
-				 _SAES_CR_DATATYPE_BYTE);
+	ctx->cr = set_field_u32(ctx->cr, _SAES_CR_DATATYPE_MASK,
+				_SAES_CR_DATATYPE_BYTE);
 
 	/* Configure keysize */
 	switch (key_size) {
@@ -619,8 +621,8 @@ TEE_Result stm32_saes_init(struct stm32_saes_context *ctx, bool is_dec,
 	/* Configure key */
 	switch (key_select) {
 	case STM32_SAES_KEY_SOFT:
-		ctx->cr |= set_field_u32(ctx->cr, _SAES_CR_KEYSEL_MASK,
-					 _SAES_CR_KEYSEL_SOFT);
+		ctx->cr = set_field_u32(ctx->cr, _SAES_CR_KEYSEL_MASK,
+					_SAES_CR_KEYSEL_SOFT);
 		/* Save key */
 		switch (key_size) {
 		case AES_KEYSIZE_128:
@@ -651,20 +653,20 @@ TEE_Result stm32_saes_init(struct stm32_saes_context *ctx, bool is_dec,
 		}
 		break;
 	case STM32_SAES_KEY_DHU:
-		ctx->cr |= set_field_u32(ctx->cr, _SAES_CR_KEYSEL_MASK,
-					 _SAES_CR_KEYSEL_DHUK);
+		ctx->cr = set_field_u32(ctx->cr, _SAES_CR_KEYSEL_MASK,
+					_SAES_CR_KEYSEL_DHUK);
 		break;
 	case STM32_SAES_KEY_BH:
-		ctx->cr |= set_field_u32(ctx->cr, _SAES_CR_KEYSEL_MASK,
-					 _SAES_CR_KEYSEL_BHK);
+		ctx->cr = set_field_u32(ctx->cr, _SAES_CR_KEYSEL_MASK,
+					_SAES_CR_KEYSEL_BHK);
 		break;
 	case STM32_SAES_KEY_BHU_XOR_BH:
-		ctx->cr |= set_field_u32(ctx->cr, _SAES_CR_KEYSEL_MASK,
-					 _SAES_CR_KEYSEL_BHU_XOR_BH_K);
+		ctx->cr = set_field_u32(ctx->cr, _SAES_CR_KEYSEL_MASK,
+					_SAES_CR_KEYSEL_BHU_XOR_BH_K);
 		break;
 	case STM32_SAES_KEY_WRAPPED:
-		ctx->cr |= set_field_u32(ctx->cr, _SAES_CR_KEYSEL_MASK,
-					 _SAES_CR_KEYSEL_SOFT);
+		ctx->cr = set_field_u32(ctx->cr, _SAES_CR_KEYSEL_MASK,
+					_SAES_CR_KEYSEL_SOFT);
 		break;
 
 	default:
@@ -1033,7 +1035,7 @@ TEE_Result stm32_saes_update(struct stm32_saes_context *ctx, bool last_block,
 			 */
 
 			/* We save remaining mask and its new size */
-			memmove(ctx->extra, ctx->extra + j,
+			memmove(ctx->extra, (uint8_t *)ctx->extra + j,
 				ctx->extra_size - j);
 			ctx->extra_size -= j;
 
@@ -1348,17 +1350,15 @@ out:
 static TEE_Result stm32_saes_parse_fdt(struct stm32_saes_platdata *pdata,
 				       const void *fdt, int node)
 {
-	struct dt_node_info dt_saes = { };
 	TEE_Result res = TEE_ERROR_GENERIC;
+	size_t reg_size = 0;
+	paddr_t reg = 0;
 
-	dt_saes.reg = fdt_reg_base_address(fdt, node);
-	dt_saes.reg_size = fdt_reg_size(fdt, node);
+	res = clk_dt_get_by_name(fdt, node, "bus", &pdata->clk);
+	if (res != TEE_SUCCESS)
+		return res;
 
-	if (dt_saes.reg == DT_INFO_INVALID_REG ||
-	    dt_saes.reg_size == DT_INFO_INVALID_REG_SIZE)
-		return TEE_ERROR_BAD_PARAMETERS;
-
-	res = clk_dt_get_by_index(fdt, node, 0, &pdata->clk);
+	res = clk_dt_get_by_name(fdt, node, "rng", &pdata->clk_rng);
 	if (res != TEE_SUCCESS)
 		return res;
 
@@ -1366,12 +1366,58 @@ static TEE_Result stm32_saes_parse_fdt(struct stm32_saes_platdata *pdata,
 	if (res != TEE_SUCCESS && res != TEE_ERROR_ITEM_NOT_FOUND)
 		return res;
 
-	pdata->base = (vaddr_t)phys_to_virt(dt_saes.reg, MEM_AREA_IO_SEC,
-					    dt_saes.reg_size);
+	if (fdt_reg_info(fdt, node, &reg, &reg_size))
+		return TEE_ERROR_BAD_PARAMETERS;
+
+	pdata->base = (vaddr_t)phys_to_virt(reg, MEM_AREA_IO_SEC, reg_size);
 	if (!pdata->base)
 		panic();
 
 	return TEE_SUCCESS;
+}
+
+static void stm32_saes_reset(void)
+{
+	if (saes_pdata.reset) {
+		/* External reset of SAES */
+		if (rstctrl_assert_to(saes_pdata.reset, TIMEOUT_US_1MS))
+			panic();
+
+		udelay(SAES_RESET_DELAY);
+
+		if (rstctrl_deassert_to(saes_pdata.reset, TIMEOUT_US_1MS))
+			panic();
+	} else {
+		/* Internal reset of SAES */
+		io_setbits32(saes_pdata.base + _SAES_CR, _SAES_CR_IPRST);
+		udelay(SAES_RESET_DELAY);
+		io_clrbits32(saes_pdata.base + _SAES_CR, _SAES_CR_IPRST);
+	}
+}
+
+static TEE_Result stm32_saes_pm(enum pm_op op, uint32_t pm_hint,
+				const struct pm_callback_handle *hdl __unused)
+{
+	switch (op) {
+	case PM_OP_SUSPEND:
+		clk_disable(saes_pdata.clk);
+		clk_disable(saes_pdata.clk_rng);
+		return TEE_SUCCESS;
+
+	case PM_OP_RESUME:
+		if (clk_enable(saes_pdata.clk) ||
+		    clk_enable(saes_pdata.clk_rng))
+			panic();
+
+		if (PM_HINT_IS_STATE(pm_hint, CONTEXT))
+			stm32_saes_reset();
+
+		return TEE_SUCCESS;
+	default:
+		break;
+	}
+
+	return TEE_ERROR_NOT_IMPLEMENTED;
 }
 
 static TEE_Result stm32_saes_probe(const void *fdt, int node,
@@ -1385,24 +1431,10 @@ static TEE_Result stm32_saes_probe(const void *fdt, int node,
 	if (res)
 		return res;
 
-	if (clk_enable(saes_pdata.clk))
+	if (clk_enable(saes_pdata.clk) || clk_enable(saes_pdata.clk_rng))
 		panic();
 
-	/* External reset of SAES */
-	if (saes_pdata.reset) {
-		if (rstctrl_assert_to(saes_pdata.reset, TIMEOUT_US_1MS))
-			panic();
-
-		udelay(SAES_RESET_DELAY);
-
-		if (rstctrl_deassert_to(saes_pdata.reset, TIMEOUT_US_1MS))
-			panic();
-	}
-
-	/* Internal reset of SAES */
-	io_setbits32(saes_pdata.base + _SAES_CR, _SAES_CR_IPRST);
-	udelay(SAES_RESET_DELAY);
-	io_clrbits32(saes_pdata.base + _SAES_CR, _SAES_CR_IPRST);
+	stm32_saes_reset();
 
 	if (IS_ENABLED(CFG_CRYPTO_DRV_CIPHER)) {
 		res = stm32_register_cipher(SAES_IP);
@@ -1411,6 +1443,8 @@ static TEE_Result stm32_saes_probe(const void *fdt, int node,
 			panic();
 		}
 	}
+
+	register_pm_core_service_cb(stm32_saes_pm, NULL, "stm32-saes");
 
 	return TEE_SUCCESS;
 }
@@ -1423,5 +1457,5 @@ static const struct dt_device_match saes_match_table[] = {
 DEFINE_DT_DRIVER(stm32_saes_dt_driver) = {
 	.name = "stm32-saes",
 	.match_table = saes_match_table,
-	.probe = &stm32_saes_probe,
+	.probe = stm32_saes_probe,
 };

@@ -51,6 +51,9 @@ struct thread_core_local {
 	struct thread_pauth_keys keys;
 #endif
 	vaddr_t tmp_stack_va_end;
+#ifdef ARM32
+	unsigned long tmp_stack_pa_end;
+#endif
 	long kcode_offset;
 	short int curr_thread;
 	uint32_t flags;
@@ -58,11 +61,18 @@ struct thread_core_local {
 #ifdef CFG_TEE_CORE_DEBUG
 	unsigned int locked_count; /* Number of spinlocks held */
 #endif
+#if defined(ARM64) && defined(CFG_CORE_FFA)
+	/* Function ID to use for a direct response, 32-bit vs 64-bit */
+	uint32_t direct_resp_fid;
+#endif
 #if defined(ARM64) && defined(CFG_CORE_WORKAROUND_SPECTRE_BP_SEC)
 	uint8_t bhb_loop_count;
 #endif
 #ifdef CFG_CORE_DEBUG_CHECK_STACKS
 	bool stackcheck_recursion;
+#endif
+#ifdef CFG_FAULT_MITIGATION
+	struct ftmn_func_arg *ftmn_arg;
 #endif
 } THREAD_CORE_LOCAL_ALIGNED;
 
@@ -97,6 +107,23 @@ struct thread_smc_args {
 	uint32_t a6;	/* Not used */
 	uint32_t a7;	/* Hypervisor Client ID */
 };
+
+struct thread_smc_1_2_regs {
+	union {
+		struct {
+			uint32_t a0;
+			uint32_t a1;
+			uint32_t a2;
+			uint32_t a3;
+			uint32_t a4;
+			uint32_t a5;
+			uint32_t a6;
+			uint32_t a7;
+		};
+		uint32_t a[8];
+		struct thread_smc_args arg11;
+	};
+};
 #endif /*ARM32*/
 #ifdef ARM64
 struct thread_smc_args {
@@ -108,6 +135,33 @@ struct thread_smc_args {
 	uint64_t a5;	/* Not used */
 	uint64_t a6;	/* Not used */
 	uint64_t a7;	/* Hypervisor Client ID */
+};
+
+struct thread_smc_1_2_regs {
+	union {
+		struct {
+			uint64_t a0;
+			uint64_t a1;
+			uint64_t a2;
+			uint64_t a3;
+			uint64_t a4;
+			uint64_t a5;
+			uint64_t a6;
+			uint64_t a7;
+			uint64_t a8;
+			uint64_t a9;
+			uint64_t a10;
+			uint64_t a11;
+			uint64_t a12;
+			uint64_t a13;
+			uint64_t a14;
+			uint64_t a15;
+			uint64_t a16;
+			uint64_t a17;
+		};
+		uint64_t a[18];
+		struct thread_smc_args arg11;
+	};
 };
 #endif /*ARM64*/
 

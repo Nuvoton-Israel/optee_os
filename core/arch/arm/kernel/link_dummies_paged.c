@@ -13,13 +13,21 @@
 #include <mm/fobj.h>
 #include <mm/mobj.h>
 #include <tee_api_types.h>
-#include <tee/entry_std.h>
 
 void __section(".text.dummy.call_preinitcalls") call_preinitcalls(void)
 {
 }
 
-void __section(".text.dummy.call_initcalls") call_initcalls(void)
+void __section(".text.dummy.call_early_initcalls") call_early_initcalls(void)
+{
+}
+
+void __section(".text.dummy.call_service_initcalls")
+call_service_initcalls(void)
+{
+}
+
+void __section(".text.dummy.call_driver_initcalls") call_driver_initcalls(void)
 {
 }
 
@@ -29,7 +37,12 @@ void __section(".text.dummy.call_finalcalls") call_finalcalls(void)
 
 void __section(".text.dummy.boot_init_primary_late")
 boot_init_primary_late(unsigned long fdt __unused,
-		       unsigned long tos_fw_config __unused)
+		       unsigned long manifest __unused)
+{
+}
+
+void __section(".text.dummy.boot_init_primary_final")
+boot_init_primary_final(void)
 {
 }
 
@@ -44,9 +57,7 @@ __thread_std_smc_entry(uint32_t a0 __unused, uint32_t a1 __unused,
 const struct mobj_ops mobj_reg_shm_ops __rodata_dummy;
 const struct mobj_ops mobj_phys_ops __rodata_dummy;
 const struct mobj_ops mobj_virt_ops __rodata_dummy;
-const struct mobj_ops mobj_mm_ops __rodata_dummy;
 const struct mobj_ops mobj_shm_ops __rodata_dummy;
-const struct mobj_ops mobj_seccpy_shm_ops __rodata_dummy;
 const struct mobj_ops mobj_with_fobj_ops __rodata_dummy;
 const struct fobj_ops ops_rwp_paged_iv __rodata_dummy;
 const struct fobj_ops ops_rwp_unpaged_iv __rodata_dummy;

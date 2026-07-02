@@ -2,10 +2,11 @@
 /*
  * Copyright (c) 2016, Linaro Limited
  * Copyright (c) 2014, STMicroelectronics International N.V.
+ * Copyright (c) 2026, Arm Limited
  */
 
-#ifndef ARM32_H
-#define ARM32_H
+#ifndef __ARM32_H
+#define __ARM32_H
 
 #include <compiler.h>
 #include <sys/cdefs.h>
@@ -165,7 +166,7 @@
 
 #ifndef __ASSEMBLER__
 #include <generated/arm32_sysreg.h>
-#ifdef CFG_ARM_GICV3
+#ifdef _CFG_ARM_V3_OR_V4
 #include <generated/arm32_gicv3_sysreg.h>
 #endif
 
@@ -278,4 +279,4 @@ static __always_inline __noprof uint32_t read_r7(void)
 
 #endif /*__ASSEMBLER__*/
 
-#endif /*ARM32_H*/
+#endif /*__ARM32_H*/

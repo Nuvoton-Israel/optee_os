@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /*
- * Copyright (C) STMicroelectronics 2021-2022 - All Rights Reserved
+ * Copyright (C) STMicroelectronics 2021-2024 - All Rights Reserved
  * Author: Alexandre Torgue <alexandre.torgue@foss.st.com> for STMicroelectronics.
  */
 
 /dts-v1/;
 
 #include <dt-bindings/clock/stm32mp13-clksrc.h>
+#include <dt-bindings/firewall/stm32mp13-tzc400.h>
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/gpio/stm32mp_gpio.h>
 #include <dt-bindings/regulator/st,stm32mp13-regulator.h>
+#include <dt-bindings/tamper/st,stm32mp13-tamp.h>
 #include "stm32mp135.dtsi"
 #include "stm32mp13xf.dtsi"
 #include "stm32mp13-pinctrl.dtsi"
@@ -39,6 +42,7 @@
 		optee_framebuffer: optee-framebuffer@dd000000 {
 			/* Secure framebuffer memory */
 			reg = <0xdd000000 0x1000000>;
+			st,protreg = <DT_TZC_REGION_S_RDWR 0>;
 			no-map;
 		};
 	};
@@ -60,26 +64,80 @@
 	};
 };
 
-&adc_2 {
-	vdda-supply = <&vdd_adc>;
-	vref-supply = <&vdd_adc>;
-	status = "okay";
-
-	adc2: adc@0 {
-		status = "okay";
-
-		channel@15 {
-			reg = <15>;
-			label = "vbat";
-		};
-	};
-};
-
 &bsec {
 	board_id: board_id@f0 {
 		reg = <0xf0 0x4>;
 		st,non-secure-otp;
 	};
+};
+
+&cpu0 {
+	cpu-supply = <&vddcpu>;
+};
+
+&etzpc {
+	st,decprot =
+		<DECPROT(STM32MP1_ETZPC_ADC1_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_ADC2_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_BKPSRAM_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_CRYP_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_DCMIPP_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_DDRCTRLPHY_ID, DECPROT_NS_R_S_W, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_ETH1_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_ETH2_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_FMC_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_HASH_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_I2C3_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_I2C4_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_I2C5_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_IWDG1_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_LPTIM2_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_LPTIM3_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_LTDC_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_MCE_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_OTG_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_PKA_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_QSPI_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_RNG_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_SAES_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_SDMMC1_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_SDMMC2_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_SPI4_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_SPI5_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_SRAM1_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_SRAM2_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_SRAM3_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_STGENC_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_TIM12_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_TIM13_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_TIM14_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_TIM15_ID, DECPROT_S_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_TIM16_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_TIM17_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_USART1_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_USART2_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_USBPHYCTRL_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>,
+		<DECPROT(STM32MP1_ETZPC_VREFBUF_ID, DECPROT_NS_RW, DECPROT_UNLOCK)>;
+};
+
+&gpioa {
+	st,protreg = <TZPROT(6)>;
+};
+
+&gpiob {
+	st,protreg = <TZPROT(9)>;
+};
+
+&gpiod {
+	st,protreg = <TZPROT(7)>;
+};
+
+&gpioe {
+	st,protreg = <TZPROT(15)>;
+};
+
+&hash {
+	status = "okay";
 };
 
 &i2c4 {
@@ -273,6 +331,10 @@
 	st,non-secure-otp-provisioning;
 };
 
+&pka {
+	status = "okay";
+};
+
 &pwr_regulators {
 	vdd-supply = <&vdd>;
 	vdd_3v3_usbfs-supply = <&vdd_usb>;
@@ -334,6 +396,12 @@
 			frac = <0xAAA>;
 		};
 
+		pll1_vco_1800Mhz: pll1-vco-1800Mhz {
+			src = <CLK_PLL12_HSE>;
+			divmn = <1 74>;
+			frac = <0>;
+		};
+
 		pll1_vco_1300Mhz: pll1-vco-1300Mhz {
 			src = <CLK_PLL12_HSE>;
 			divmn = <2 80>;
@@ -372,6 +440,11 @@
 
 		pll1_cfg2: pll1_cfg2 {
 			st,pll_vco = <&pll1_vco_2000Mhz>;
+			st,pll_div_pqr = <0 1 1>;
+		};
+
+		pll1_cfg3: pll1_cfg3 {
+			st,pll_vco = <&pll1_vco_1800Mhz>;
 			st,pll_div_pqr = <0 1 1>;
 		};
 	};
@@ -417,7 +490,6 @@
 	st,clk_opp {
 		/* CK_MPU clock config for MP13 */
 		st,ck_mpu {
-
 			cfg_1 {
 				hz = <650000000>;
 				st,clksrc = <CLK_MPU_PLL1P>;
@@ -429,6 +501,12 @@
 				st,clksrc = <CLK_MPU_PLL1P>;
 				st,pll = <&pll1_cfg2>;
 			};
+
+			cfg_3 {
+				hz = <900000000>;
+				st,clksrc = <CLK_MPU_PLL1P>;
+				st,pll = <&pll1_cfg3>;
+			};
 		};
 	};
 };
@@ -438,12 +516,42 @@
 	clock-error-detect;
 };
 
-&rtc {
+&saes {
 	status = "okay";
 };
 
-&saes {
-	status = "okay";
+&sdmmc1_io {
+	vddsd1-supply = <&vdd>;
+};
+
+&sdmmc2_io {
+	vddsd2-supply = <&vdd>;
+};
+
+&tamp {
+	st,tamp-passive-nb-sample = <4>;
+	st,tamp-passive-sample-clk-div = <16384>;
+	wakeup-source;
+
+	/* Tamper button */
+	tamp-button {
+		tamper-gpios = <&gpioa 6 0>;
+		st,tamp-mode = <TAMPER_CONFIRMED_MODE>;
+		st,tamp-id = <2>;
+		status = "okay";
+	};
+
+	/* Connect pin8 and pin22 from CN8 */
+	tamp-active {
+		tamper-gpios = <&gpioc 0 0>, <&gpioi 0 0>;
+		st,tamp-mode = <TAMPER_CONFIRMED_MODE>;
+		st,tamp-id = <3>, <1>;
+		status = "disabled";
+	};
+};
+
+&tzc400 {
+	memory-region = <&optee_framebuffer>;
 };
 
 &uart4 {

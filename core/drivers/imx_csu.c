@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 /*
- * Copyright 2017-2019 NXP
+ * Copyright 2017-2023 NXP
  *
  */
 
@@ -9,6 +9,7 @@
 #include <initcall.h>
 #include <io.h>
 #include <kernel/panic.h>
+#include <kernel/pm.h>
 #include <mm/core_memprot.h>
 
 struct csu_setting {
@@ -71,13 +72,14 @@ const struct csu_setting csu_setting_imx7ds[] = {
 	{(-1), 0},
 };
 
-/* Set all masters to non-secure except the Cortex-A7 */
+/* Set all masters to non-secure except the Cortex-A cores */
+const struct csu_sa_setting csu_sa_imx6 = { 0x15554554, 0x2aaa8aaa };
 const struct csu_sa_setting csu_sa_imx6ul = { 0x10554550, 0x20aa8aa2 };
 const struct csu_sa_setting csu_sa_imx7ds = { 0x15554554, 0x2aaa8aaa };
 
-const struct csu_config csu_imx6 = { NULL, csu_setting_imx6 };
+const struct csu_config csu_imx6 = { &csu_sa_imx6, csu_setting_imx6 };
 const struct csu_config csu_imx6ul = { &csu_sa_imx6ul, csu_setting_imx6ul };
-const struct csu_config csu_imx6ull = { NULL, csu_setting_imx6ull };
+const struct csu_config csu_imx6ull = { &csu_sa_imx6ul, csu_setting_imx6ull };
 const struct csu_config csu_imx6sl = { NULL, csu_setting_imx6sl };
 const struct csu_config csu_imx6sx = { NULL, csu_setting_imx6sx };
 const struct csu_config csu_imx7ds = { &csu_sa_imx7ds, csu_setting_imx7ds };
@@ -97,7 +99,7 @@ static void rngb_configure(vaddr_t csu_base)
 	io_mask32(csu_base + csu_index * 4, 0x330000, 0xFF0000);
 }
 
-static TEE_Result csu_init(void)
+static TEE_Result csu_configure(void)
 {
 	vaddr_t csu_base;
 	vaddr_t offset;
@@ -149,6 +151,24 @@ static TEE_Result csu_init(void)
 		io_write32(csu_base + CSU_SA, csu_config->sa->access_value);
 		io_setbits32(csu_base + CSU_SA, csu_config->sa->lock_value);
 	}
+
+	return TEE_SUCCESS;
+}
+
+static TEE_Result
+pm_enter_resume(enum pm_op op, uint32_t pm_hint __unused,
+		const struct pm_callback_handle *pm_handle __unused)
+{
+	if (op == PM_OP_RESUME)
+		csu_configure();
+
+	return TEE_SUCCESS;
+}
+
+static TEE_Result csu_init(void)
+{
+	csu_configure();
+	register_pm_driver_cb(pm_enter_resume, NULL, "imx-csu");
 
 	return TEE_SUCCESS;
 }

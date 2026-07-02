@@ -5,8 +5,8 @@
  * Copyright (c) 2020, Arm Limited
  */
 
-#ifndef TEE_TA_MANAGER_H
-#define TEE_TA_MANAGER_H
+#ifndef __KERNEL_TEE_TA_MANAGER_H
+#define __KERNEL_TEE_TA_MANAGER_H
 
 #include <assert.h>
 #include <kernel/mutex.h>
@@ -73,6 +73,8 @@ struct tee_ta_ctx {
 	uint32_t panic_code;	/* Code supplied for panic */
 	uint32_t ref_count;	/* Reference counter for multi session TA */
 	bool busy;		/* Context is busy and cannot be entered */
+	bool is_initializing;	/* Context initialization is not completed */
+	bool is_releasing;	/* Context is about to be released */
 	struct condvar busy_cv;	/* CV used when context is busy */
 };
 
@@ -99,8 +101,7 @@ extern struct tee_ta_ctx_head tee_ctxes;
 extern struct mutex tee_ta_mutex;
 extern struct condvar tee_ta_init_cv;
 
-TEE_Result tee_ta_open_session(TEE_ErrorOrigin *err,
-			       struct tee_ta_session **sess,
+TEE_Result tee_ta_open_session(TEE_ErrorOrigin *err, uint32_t *sess_id,
 			       struct tee_ta_session_head *open_sessions,
 			       const TEE_UUID *uuid,
 			       const TEE_Identity *clnt_id,
@@ -126,7 +127,7 @@ bool tee_ta_session_is_cancelled(struct tee_ta_session *s, TEE_Time *curr_time);
  * Returns:
  *        TEE_Result
  *---------------------------------------------------------------------------*/
-TEE_Result tee_ta_close_session(struct tee_ta_session *sess,
+TEE_Result tee_ta_close_session(uint32_t id,
 				struct tee_ta_session_head *open_sessions,
 				const TEE_Identity *clnt_id);
 
@@ -161,7 +162,7 @@ bool is_ta_ctx(struct ts_ctx *ctx);
 
 struct tee_ta_session *to_ta_session(struct ts_session *sess);
 
-static inline struct tee_ta_ctx *to_ta_ctx(struct ts_ctx *ctx)
+static inline struct tee_ta_ctx *__noprof to_ta_ctx(struct ts_ctx *ctx)
 {
 	assert(is_ta_ctx(ctx));
 	return container_of(ctx, struct tee_ta_ctx, ts_ctx);

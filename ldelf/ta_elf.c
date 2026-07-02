@@ -4,10 +4,10 @@
  * Copyright (c) 2020-2023, Arm Limited
  */
 
+#include <asan.h>
 #include <assert.h>
 #include <config.h>
 #include <confine_array_index.h>
-#include <ctype.h>
 #include <elf32.h>
 #include <elf64.h>
 #include <elf_common.h>
@@ -104,14 +104,22 @@ static TEE_Result e32_parse_ehdr(struct ta_elf *elf, Elf32_Ehdr *ehdr)
 	if (ehdr->e_ident[EI_VERSION] != EV_CURRENT ||
 	    ehdr->e_ident[EI_CLASS] != ELFCLASS32 ||
 	    ehdr->e_ident[EI_DATA] != ELFDATA2LSB ||
-	    ehdr->e_ident[EI_OSABI] != ELFOSABI_NONE ||
+	    (ehdr->e_ident[EI_OSABI] != ELFOSABI_NONE &&
+	     ehdr->e_ident[EI_OSABI] != ELFOSABI_ARM) ||
 	    ehdr->e_type != ET_DYN || ehdr->e_machine != EM_ARM ||
-	    (ehdr->e_flags & EF_ARM_ABIMASK) != EF_ARM_ABI_VERSION ||
 #ifndef CFG_WITH_VFP
 	    (ehdr->e_flags & EF_ARM_ABI_FLOAT_HARD) ||
 #endif
 	    ehdr->e_phentsize != sizeof(Elf32_Phdr) ||
 	    ehdr->e_shentsize != sizeof(Elf32_Shdr))
+		return TEE_ERROR_BAD_FORMAT;
+
+	if (ehdr->e_ident[EI_OSABI] == ELFOSABI_NONE &&
+	    (ehdr->e_flags & EF_ARM_ABIMASK) != EF_ARM_ABI_V5)
+		return TEE_ERROR_BAD_FORMAT;
+
+	if (ehdr->e_ident[EI_OSABI] == ELFOSABI_ARM &&
+	    (ehdr->e_flags & EF_ARM_ABIMASK) != EF_ARM_ABI_UNKNOWN)
 		return TEE_ERROR_BAD_FORMAT;
 
 	elf->is_32bit = true;
@@ -955,10 +963,10 @@ static void parse_property_segment(struct ta_elf *elf)
 	    !IS_POWER_OF_TWO(align))
 		return;
 
-	desc_offset = ROUNDUP(sizeof(*note) + sizeof(ELF_NOTE_GNU), align);
+	desc_offset = ROUNDUP2(sizeof(*note) + sizeof(ELF_NOTE_GNU), align);
 
 	if (desc_offset > elf->prop_memsz ||
-	    ROUNDUP(desc_offset + note->n_descsz, align) > elf->prop_memsz)
+	    ROUNDUP2(desc_offset + note->n_descsz, align) > elf->prop_memsz)
 		return;
 
 	desc = (char *)(va + desc_offset);
@@ -985,7 +993,7 @@ static void parse_property_segment(struct ta_elf *elf)
 			}
 		}
 
-		prop_offset += ROUNDUP(sizeof(*prop) + prop->pr_datasz, align);
+		prop_offset += ROUNDUP2(sizeof(*prop) + prop->pr_datasz, align);
 	} while (prop_offset < note->n_descsz);
 }
 
@@ -1061,13 +1069,17 @@ static void add_deps_from_segment(struct ta_elf *elf, unsigned int type,
 	check_range(elf, ".dynstr/STRTAB", str_tab, str_tab_sz);
 
 	for (n = 0; n < num_dyns; n++) {
+		TEE_Result res = TEE_SUCCESS;
+
 		read_dyn(elf, addr, n, &tag, &val);
 		if (tag != DT_NEEDED)
 			continue;
 		if (val >= str_tab_sz)
 			err(TEE_ERROR_BAD_FORMAT,
 			    "Offset into .dynstr/STRTAB out of range");
-		tee_uuid_from_str(&uuid, str_tab + val);
+		res = tee_uuid_from_str(&uuid, str_tab + val);
+		if (res)
+			err(res, "Fail to get UUID from string");
 		queue_elf(&uuid);
 	}
 }
@@ -1195,6 +1207,8 @@ static void set_tls_offset(struct ta_elf *elf __unused) {}
 
 static void load_main(struct ta_elf *elf)
 {
+	vaddr_t va = 0;
+
 	init_elf(elf);
 	map_segments(elf);
 	populate_segments(elf);
@@ -1207,7 +1221,10 @@ static void load_main(struct ta_elf *elf)
 	if (elf->bti_enabled)
 		ta_elf_add_bti(elf);
 
-	elf->head = (struct ta_head *)elf->load_addr;
+	if (!ta_elf_resolve_sym("ta_head", &va, NULL, elf))
+		elf->head = (struct ta_head *)va;
+	else
+		elf->head = (struct ta_head *)elf->load_addr;
 	if (elf->head->depr_entry != UINT64_MAX) {
 		/*
 		 * Legacy TAs sets their entry point in ta_head. For
@@ -1272,6 +1289,18 @@ void ta_elf_load_main(const TEE_UUID *uuid, uint32_t *is_32bit, uint64_t *sp,
 	*sp = va + elf->head->stack_size;
 	ta_stack = va;
 	ta_stack_size = elf->head->stack_size;
+
+	if (IS_ENABLED(CFG_TA_SANITIZE_KADDRESS)) {
+		res = asan_user_map_shadow((void *)ta_stack,
+					   (void *)(ta_stack +
+					   roundup(ta_stack_size)),
+					   ASAN_REG_STACK);
+		if (res) {
+			EMSG("Failed to map shadow stack for ELF (%pUl)",
+			     (void *)&elf->uuid);
+			panic();
+		}
+	}
 }
 
 void ta_elf_finalize_load_main(uint64_t *entry, uint64_t *load_addr)
@@ -1460,9 +1489,9 @@ void ta_elf_print_mappings(void *pctx, print_func_t print_func,
 	get_next_in_order(elf_queue, &elf, &seg, &elf_idx);
 	while (true) {
 		vaddr_t va = -1;
+		paddr_t pa = -1;
 		size_t sz = 0;
 		uint32_t flags = DUMP_MAP_SECURE;
-		size_t offs = 0;
 
 		if (seg) {
 			va = rounddown(seg->vaddr + elf->load_addr);
@@ -1475,6 +1504,7 @@ void ta_elf_print_mappings(void *pctx, print_func_t print_func,
 
 			/* If there's a match, it should be the same map */
 			if (maps[map_idx].va == va) {
+				pa = maps[map_idx].pa;
 				/*
 				 * In shared libraries the first page is
 				 * mapped separately with the rest of that
@@ -1513,7 +1543,6 @@ void ta_elf_print_mappings(void *pctx, print_func_t print_func,
 		if (!seg)
 			break;
 
-		offs = rounddown(seg->offset);
 		if (seg->flags & PF_R)
 			flags |= DUMP_MAP_READ;
 		if (seg->flags & PF_W)
@@ -1521,7 +1550,7 @@ void ta_elf_print_mappings(void *pctx, print_func_t print_func,
 		if (seg->flags & PF_X)
 			flags |= DUMP_MAP_EXEC;
 
-		print_seg(pctx, print_func, idx, elf_idx, va, offs, sz, flags);
+		print_seg(pctx, print_func, idx, elf_idx, va, pa, sz, flags);
 		idx++;
 
 		if (!get_next_in_order(elf_queue, &elf, &seg, &elf_idx))
@@ -1613,9 +1642,22 @@ TEE_Result ta_elf_add_library(const TEE_UUID *uuid)
 		ta_elf_finalize_mappings(elf);
 	}
 
-	for (elf = lib; elf; elf = TAILQ_NEXT(elf, link))
+	for (elf = lib; elf; elf = TAILQ_NEXT(elf, link)) {
+		if (IS_ENABLED(CFG_TA_SANITIZE_KADDRESS)) {
+			int rc;
+
+			rc = asan_user_map_shadow((void *)elf->load_addr,
+						  (void *)elf->max_addr,
+						  ASAN_REG_ELF);
+			if (rc) {
+				EMSG("Failed to map shadow for ELF (%pUl)",
+				     (void *)&elf->uuid);
+				panic();
+			}
+		}
 		DMSG("ELF (%pUl) at %#"PRIxVA,
 		     (void *)&elf->uuid, elf->load_addr);
+	}
 
 	res = ta_elf_set_init_fini_info_compat(ta->is_32bit);
 	if (res)

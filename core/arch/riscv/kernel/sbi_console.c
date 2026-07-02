@@ -14,52 +14,35 @@
 #include <trace.h>
 #include <util.h>
 
-#ifdef CFG_RISCV_SBI_CONSOLE
-
 struct sbi_console_data {
 	struct serial_chip chip;
 };
 
 static struct sbi_console_data console_data __nex_bss;
-static unsigned int sbi_console_global_lock __nex_bss = SPINLOCK_UNLOCK;
+static struct serial_ops sbi_console_ops __nex_bss;
 
-static void sbi_console_lock_global(void)
+static void sbi_console_putc_legacy(struct serial_chip *chip __unused, int ch)
 {
-	cpu_spin_lock(&sbi_console_global_lock);
-}
-
-static void sbi_console_unlock_global(void)
-{
-	cpu_spin_unlock(&sbi_console_global_lock);
-}
-
-static void sbi_console_flush(struct serial_chip *chip __unused)
-{
-}
-
-static void sbi_console_putc(struct serial_chip *chip __unused,
-			     int ch)
-{
-	sbi_console_lock_global();
 	sbi_console_putchar(ch);
-	sbi_console_unlock_global();
 }
 
-static const struct serial_ops sbi_console_ops = {
-	.flush = sbi_console_flush,
-	.putc = sbi_console_putc,
-};
+static void sbi_console_putc(struct serial_chip *chip __unused, int ch)
+{
+	sbi_dbcn_write_byte(ch);
+}
 
 static void sbi_console_init(struct sbi_console_data *pd)
 {
+	if (sbi_probe_extension(SBI_EXT_DBCN))
+		sbi_console_ops.putc = sbi_console_putc;
+	else
+		sbi_console_ops.putc = sbi_console_putc_legacy;
+
 	pd->chip.ops = &sbi_console_ops;
 }
 
-void console_init(void)
+void plat_console_init(void)
 {
 	sbi_console_init(&console_data);
 	register_serial_console(&console_data.chip);
 }
-
-#endif /*CFG_RISCV_SBI_CONSOLE*/
-

@@ -2,8 +2,8 @@
 /*
  * Copyright (c) 2015, Linaro Limited
  */
-#ifndef KERNEL_PSEUDO_TA_H
-#define KERNEL_PSEUDO_TA_H
+#ifndef __KERNEL_PSEUDO_TA_H
+#define __KERNEL_PSEUDO_TA_H
 
 #include <assert.h>
 #include <compiler.h>
@@ -59,6 +59,13 @@ static inline struct pseudo_ta_ctx *to_pseudo_ta_ctx(struct ts_ctx *ctx)
 	return container_of(ctx, struct pseudo_ta_ctx, ctx.ts_ctx);
 }
 
+/*
+ * Setup session context for a pseudo TA
+ * @uuid: Pseudo TA UUID
+ * @s: Session for which to setup a pseudo TA context
+ *
+ * This function must be called with tee_ta_mutex locked.
+ */
 TEE_Result tee_ta_init_pseudo_ta_session(const TEE_UUID *uuid,
 			struct tee_ta_session *s);
 
@@ -95,5 +102,5 @@ TEE_Result from_bounce_params(uint32_t param_types,
 			      TEE_Param bparams[TEE_NUM_PARAMS],
 			      TEE_Param *eparams);
 
-#endif /* KERNEL_PSEUDO_TA_H */
+#endif /* __KERNEL_PSEUDO_TA_H */
 

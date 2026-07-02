@@ -27,6 +27,7 @@
    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <asan.h>
 #include <asm.S>
 
 #define GPR_LAYOUT			\
@@ -81,6 +82,13 @@ BTI(	bti	c)
 	add	x0, x0, #104
 	bl	ftrace_longjmp
 	ldp	x29, x30, [sp], #16
+	ldp	x0, x1, [sp], #16
+#endif
+
+#if ASAN_IS_ENABLED && (!defined(__KERNEL__) || !defined(CFG_DYN_CONFIG))
+	stp	x0, x1, [sp, #-16]!
+	ldr	x0, [x0, 96]
+	bl	asan_handle_longjmp
 	ldp	x0, x1, [sp], #16
 #endif
 	GPR_LAYOUT

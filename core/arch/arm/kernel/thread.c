@@ -8,12 +8,13 @@
 #include <platform_config.h>
 
 #include <arm.h>
+#include <asan.h>
 #include <assert.h>
 #include <config.h>
 #include <io.h>
 #include <keep.h>
-#include <kernel/asan.h>
 #include <kernel/boot.h>
+#include <kernel/interrupt.h>
 #include <kernel/linker.h>
 #include <kernel/lockdep.h>
 #include <kernel/misc.h>
@@ -24,15 +25,15 @@
 #include <kernel/thread.h>
 #include <kernel/thread_private.h>
 #include <kernel/user_access.h>
-#include <kernel/user_mode_ctx_struct.h>
+#include <kernel/user_mode_ctx.h>
 #include <kernel/virtualization.h>
 #include <mm/core_memprot.h>
 #include <mm/mobj.h>
 #include <mm/tee_mm.h>
 #include <mm/tee_pager.h>
 #include <mm/vm.h>
-#include <smccc.h>
 #include <sm/sm.h>
+#include <smccc.h>
 #include <trace.h>
 #include <util.h>
 
@@ -332,17 +333,33 @@ static bool is_from_user(uint32_t cpsr)
 static void __noprof ftrace_suspend(void)
 {
 	struct ts_session *s = TAILQ_FIRST(&thread_get_tsd()->sess_stack);
+	TEE_Result res = TEE_SUCCESS;
 
-	if (s && s->fbuf)
-		s->fbuf->syscall_trace_suspended = true;
+	if (s && s->fbuf) {
+		res = vm_check_access_rights(to_user_mode_ctx(s->ctx),
+					     TEE_MEMORY_ACCESS_WRITE |
+					     TEE_MEMORY_ACCESS_ANY_OWNER,
+					     (uaddr_t)s->fbuf,
+					     sizeof(*s->fbuf));
+		if (!res)
+			s->fbuf->syscall_trace_suspended = true;
+	}
 }
 
 static void __noprof ftrace_resume(void)
 {
 	struct ts_session *s = TAILQ_FIRST(&thread_get_tsd()->sess_stack);
+	TEE_Result res = TEE_SUCCESS;
 
-	if (s && s->fbuf)
-		s->fbuf->syscall_trace_suspended = false;
+	if (s && s->fbuf) {
+		res = vm_check_access_rights(to_user_mode_ctx(s->ctx),
+					     TEE_MEMORY_ACCESS_WRITE |
+					     TEE_MEMORY_ACCESS_ANY_OWNER,
+					     (uaddr_t)s->fbuf,
+					     sizeof(*s->fbuf));
+		if (!res)
+			s->fbuf->syscall_trace_suspended = false;
+	}
 }
 #else
 static void __noprof ftrace_suspend(void)
@@ -439,7 +456,7 @@ vaddr_t thread_get_saved_thread_sp(void)
 #endif /*ARM64*/
 
 #ifdef ARM32
-bool thread_is_in_normal_mode(void)
+bool __noprof thread_is_in_normal_mode(void)
 {
 	return (read_cpsr() & ARM32_CPSR_MODE_MASK) == ARM32_CPSR_MODE_SVC;
 }
@@ -550,14 +567,6 @@ int thread_state_suspend(uint32_t flags, uint32_t cpsr, vaddr_t pc)
 	return ct;
 }
 
-bool thread_init_stack(uint32_t thread_id, vaddr_t sp)
-{
-	if (thread_id >= CFG_NUM_THREADS)
-		return false;
-	threads[thread_id].stack_va_end = sp;
-	return true;
-}
-
 static void __maybe_unused
 set_core_local_kcode_offset(struct thread_core_local *cls, long offset)
 {
@@ -598,9 +607,6 @@ static void init_user_kcode(void)
 
 void thread_init_primary(void)
 {
-	/* Initialize canaries around the stacks */
-	thread_init_canaries();
-
 	init_user_kcode();
 }
 
@@ -774,19 +780,6 @@ static vaddr_t get_excp_vect(void)
 
 void thread_init_per_cpu(void)
 {
-#ifdef ARM32
-	struct thread_core_local *l = thread_get_core_local();
-
-#if !defined(CFG_WITH_ARM_TRUSTED_FW)
-	/* Initialize secure monitor */
-	sm_init(l->tmp_stack_va_end + STACK_TMP_OFFS);
-#endif
-	thread_set_irq_sp(l->tmp_stack_va_end);
-	thread_set_fiq_sp(l->tmp_stack_va_end);
-	thread_set_abt_sp((vaddr_t)l);
-	thread_set_und_sp((vaddr_t)l);
-#endif
-
 	thread_init_vbar(get_excp_vect());
 
 #ifdef CFG_FTRACE_SUPPORT
@@ -989,7 +982,6 @@ static void set_ctx_regs(struct thread_ctx_regs *regs, unsigned long a0,
 	regs->x[1] = a1;
 	regs->x[2] = a2;
 	regs->x[3] = a3;
-	regs->sp = user_sp;
 	regs->pc = entry_func;
 	regs->cpsr = spsr;
 	regs->x[13] = user_sp;	/* Used when running TA in Aarch32 */
@@ -1008,10 +1000,18 @@ static struct thread_pauth_keys *thread_get_pauth_keys(void)
 {
 #if defined(CFG_TA_PAUTH)
 	struct ts_session *s = ts_get_current_session();
-	/* Only user TA's support the PAUTH keys */
-	struct user_ta_ctx *utc = to_user_ta_ctx(s->ctx);
 
-	return &utc->uctx.keys;
+	if  (is_user_ta_ctx(s->ctx)) {
+		struct user_ta_ctx *utc = to_user_ta_ctx(s->ctx);
+
+		return &utc->uctx.keys;
+	} else if (is_sp_ctx(s->ctx)) {
+		struct sp_ctx *spc = to_sp_ctx(s->ctx);
+
+		return &spc->uctx.keys;
+	}
+
+	panic("[abort] Only user TAs and SPs support PAUTH keys");
 #else
 	return NULL;
 #endif

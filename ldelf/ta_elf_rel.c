@@ -198,6 +198,9 @@ static TEE_Result resolve_sym_helper(const char *name, vaddr_t *val,
 		uint32_t *bucket = &hashtab[2];
 		uint32_t *chain = &bucket[nbuckets];
 
+		if (!nbuckets)
+			return TEE_ERROR_ITEM_NOT_FOUND;
+
 		hash = elf_hash(name);
 
 		for (n = bucket[hash % nbuckets]; n; n = chain[n]) {
@@ -282,7 +285,7 @@ static void resolve_sym(const char *name, vaddr_t *val, struct ta_elf **mod,
 	if (res) {
 		if (err_if_not_found)
 			err(res, "Symbol %s not found", name);
-		else
+		else if (val)
 			*val = 0;
 	}
 }
@@ -405,11 +408,13 @@ static void e32_relocate(struct ta_elf *elf, unsigned int rel_sidx)
 	for (; rel < rel_end; rel++) {
 		struct ta_elf *mod = NULL;
 		Elf32_Addr *where = NULL;
+		Elf32_Addr end_offs = 0;
 		size_t sym_idx = 0;
 		vaddr_t val = 0;
 
 		/* Check the address is inside TA memory */
-		if (rel->r_offset >= (elf->max_addr - elf->load_addr))
+		if (ADD_OVERFLOW(rel->r_offset, sizeof(*where), &end_offs) ||
+		    end_offs >= (elf->max_addr - elf->load_addr))
 			err(TEE_ERROR_BAD_FORMAT,
 			    "Relocation offset out of range");
 		where = (Elf32_Addr *)(elf->load_addr + rel->r_offset);
@@ -644,10 +649,16 @@ static void e64_relocate(struct ta_elf *elf, unsigned int rel_sidx)
 	rela_end = rela + shdr[rel_sidx].sh_size / sizeof(Elf64_Rela);
 	for (; rela < rela_end; rela++) {
 		Elf64_Addr *where = NULL;
-		size_t sym_idx = 0;
+		size_t write_size = sizeof(*where);
+		size_t sym_idx __maybe_unused = 0;
+		Elf64_Addr end_offs = 0;
+
+		if (ELF64_R_TYPE(rela->r_info) == R_AARCH64_TLSDESC)
+			write_size *= 2;
 
 		/* Check the address is inside TA memory */
-		if (rela->r_offset >= (elf->max_addr - elf->load_addr))
+		if (ADD_OVERFLOW(rela->r_offset, write_size, &end_offs) ||
+		    end_offs >= (elf->max_addr - elf->load_addr))
 			err(TEE_ERROR_BAD_FORMAT,
 			    "Relocation offset out of range");
 

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Copyright (c) 2020, Linaro Limited
- * Copyright (c) 2018-2023, Arm Limited. All rights reserved.
+ * Copyright (c) 2018-2024, Arm Limited. All rights reserved.
  */
 
 #ifndef __FFA_H
@@ -23,20 +23,24 @@
 #define FFA_DENIED		-6
 #define FFA_RETRY		-7
 #define FFA_ABORTED		-8
+#define FFA_NO_DATA		-9
 
 /* FFA_VERSION helpers */
-#define FFA_VERSION_MAJOR		U(1)
 #define FFA_VERSION_MAJOR_SHIFT		U(16)
 #define FFA_VERSION_MAJOR_MASK		U(0x7FFF)
-#define FFA_VERSION_MINOR		U(1)
 #define FFA_VERSION_MINOR_SHIFT		U(0)
 #define FFA_VERSION_MINOR_MASK		U(0xFFFF)
 #define MAKE_FFA_VERSION(major, minor)	\
 	((((major) & FFA_VERSION_MAJOR_MASK) << FFA_VERSION_MAJOR_SHIFT) | \
 	 ((minor) & FFA_VERSION_MINOR_MASK))
+#define FFA_GET_MAJOR_VERSION(vers)	\
+	(((uint32_t)(vers) >> FFA_VERSION_MAJOR_SHIFT) & FFA_VERSION_MAJOR_MASK)
+#define FFA_GET_MINOR_VERSION(vers)	((uint32_t)(vers) & \
+					 FFA_VERSION_MINOR_MASK)
 
 #define FFA_VERSION_1_0			MAKE_FFA_VERSION(1, 0)
 #define FFA_VERSION_1_1			MAKE_FFA_VERSION(1, 1)
+#define FFA_VERSION_1_2			MAKE_FFA_VERSION(1, 2)
 
 /* Function IDs */
 #define FFA_ERROR			U(0x84000060)
@@ -46,6 +50,7 @@
 #define FFA_VERSION			U(0x84000063)
 #define FFA_FEATURES			U(0x84000064)
 #define FFA_RX_RELEASE			U(0x84000065)
+#define FFA_RX_ACQUIRE			U(0x84000084)
 #define FFA_RXTX_MAP_32			U(0x84000066)
 #define FFA_RXTX_MAP_64			U(0xC4000066)
 #define FFA_RXTX_UNMAP			U(0x84000067)
@@ -61,6 +66,8 @@
 #define FFA_MSG_SEND_DIRECT_REQ_64	U(0xC400006F)
 #define FFA_MSG_SEND_DIRECT_RESP_32	U(0x84000070)
 #define FFA_MSG_SEND_DIRECT_RESP_64	U(0xC4000070)
+#define FFA_MSG_SEND_DIRECT_REQ2	U(0xC400008D)
+#define FFA_MSG_SEND_DIRECT_RESP2	U(0xC400008E)
 #define FFA_MSG_POLL			U(0x8400006A)
 #define FFA_MEM_DONATE_32		U(0x84000071)
 #define FFA_MEM_DONATE_64		U(0xC4000071)
@@ -75,6 +82,7 @@
 #define FFA_MEM_RECLAIM			U(0x84000077)
 #define FFA_MEM_FRAG_RX			U(0x8400007A)
 #define FFA_MEM_FRAG_TX			U(0x8400007B)
+#define FFA_NORMAL_WORLD_RESUME		U(0x8400007C)
 #define FFA_NOTIFICATION_BITMAP_CREATE	U(0x8400007D)
 #define FFA_NOTIFICATION_BITMAP_DESTROY	U(0x8400007E)
 #define FFA_NOTIFICATION_BIND		U(0x8400007F)
@@ -90,7 +98,25 @@
 #define FFA_MEM_PERM_SET_64		U(0xC4000089)
 #define FFA_CONSOLE_LOG_32		U(0x8400008A)
 #define FFA_CONSOLE_LOG_64		U(0xC400008A)
+#define FFA_EL3_INTR_HANDLE		U(0x8400008C)
+#define FFA_PARTITION_INFO_GET_REGS	U(0xC400008B)
 
+#define FFA_FEATURES_FUNC_ID_MASK	BIT32(31)
+#define FFA_FEATURES_FEATURE_ID_MASK	GENMASK_32(7, 0)
+
+/* Flags used in calls to FFA_NOTIFICATION_GET interface  */
+#define FFA_NOTIF_FLAG_BITMAP_SP	BIT(0)
+#define FFA_NOTIF_FLAG_BITMAP_VM	BIT(1)
+#define FFA_NOTIF_FLAG_BITMAP_SPM	BIT(2)
+#define FFA_NOTIF_FLAG_BITMAP_HYP	BIT(3)
+
+/* Flags used in calls to FFA_NOTIFICATION_INFO_GET interface */
+#define FFA_NOTIF_INFO_GET_MORE_FLAG		BIT(0)
+#define FFA_NOTIF_INFO_GET_ID_LIST_SHIFT	12
+#define FFA_NOTIF_INFO_GET_ID_COUNT_SHIFT	7
+#define FFA_NOTIF_INFO_GET_ID_COUNT_MASK	0x1F
+
+/* Feature IDs used with FFA_FEATURES */
 #define FFA_FEATURE_NOTIF_PEND_INTR	U(0x1)
 #define FFA_FEATURE_SCHEDULE_RECV_INTR	U(0x2)
 #define FFA_FEATURE_MANAGED_EXIT_INTR	U(0x3)
@@ -135,6 +161,8 @@
 
 /* Share memory transaction */
 #define FFA_MEMORY_REGION_TRANSACTION_TYPE_SHARE SHIFT_U32(1, 3)
+/* Lend memory transaction */
+#define FFA_MEMORY_REGION_TRANSACTION_TYPE_LEND SHIFT_U32(2, 3)
 /* Relayer must choose the alignment boundary */
 #define FFA_MEMORY_REGION_FLAG_ANY_ALIGNMENT	0
 
@@ -213,11 +241,19 @@
 #define FFA_BOOT_INFO_FLAG_CONTENT_FORMAT_ADDR	U(0)
 
 #define FFA_BOOT_INFO_SIGNATURE		U(0xFFA)
-#define FFA_BOOT_INFO_VERSION		U(0x10001)
+#define FFA_BOOT_INFO_VERSION_1_1	U(0x10001)
+#define FFA_BOOT_INFO_VERSION_1_2	U(0x10002)
 
-#define FFA_CONSOLE_LOG_CHAR_COUNT_MASK	GENMASK_32(7, 0)
-#define FFA_CONSOLE_LOG_32_MAX_MSG_LEN	U(24)
-#define FFA_CONSOLE_LOG_64_MAX_MSG_LEN	U(48)
+#define FFA_CONSOLE_LOG_CHAR_COUNT_MASK		GENMASK_32(7, 0)
+#define FFA_CONSOLE_LOG_32_MAX_MSG_LEN		U(24)
+#define FFA_CONSOLE_LOG_64_V1_1_MAX_MSG_LEN	U(48)
+#define FFA_CONSOLE_LOG_64_MAX_MSG_LEN		U(128)
+
+/* Memory transaction type in FFA_MEM_RETRIEVE_RESP flags */
+#define FFA_MEMORY_TRANSACTION_TYPE_MASK	GENMASK_32(4, 3)
+#define FFA_MEMORY_TRANSACTION_TYPE_SHARE	SHIFT_U32(1, 3)
+#define FFA_MEMORY_TRANSACTION_TYPE_LEND	SHIFT_U32(2, 3)
+#define FFA_MEMORY_TRANSACTION_TYPE_DONATE	SHIFT_U32(3, 3)
 
 #ifndef __ASSEMBLER__
 /* Constituent memory region descriptor */
@@ -242,11 +278,28 @@ struct ffa_mem_access_perm {
 	uint8_t flags;
 };
 
-/* Endpoint memory access descriptor */
-struct ffa_mem_access {
+/* Endpoint memory access descriptor up to version 1.1 */
+struct ffa_mem_access_1_0 {
 	struct ffa_mem_access_perm access_perm;
 	uint32_t region_offs;
 	uint64_t reserved;
+};
+
+/* Endpoint memory access descriptor from version 1.2 */
+struct ffa_mem_access_1_2 {
+	struct ffa_mem_access_perm access_perm;
+	uint32_t region_offs;
+	uint8_t impdef[16];
+	uint64_t reserved;
+};
+
+/*
+ * A common memory access descriptor where only the first two fields need
+ * to be accessed.
+ */
+struct ffa_mem_access_common {
+	struct ffa_mem_access_perm access_perm;
+	uint32_t region_offs;
 };
 
 /* Lend, donate or share memory transaction descriptor */
@@ -259,7 +312,7 @@ struct ffa_mem_transaction_1_0 {
 	uint64_t tag;
 	uint32_t reserved1;
 	uint32_t mem_access_count;
-	struct ffa_mem_access mem_access_array[];
+	struct ffa_mem_access_1_0 mem_access_array[];
 };
 
 struct ffa_mem_transaction_1_1 {

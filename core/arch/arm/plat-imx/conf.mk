@@ -1,5 +1,12 @@
 PLATFORM_FLAVOR ?= mx6ulevk
 
+# The default value CFG_INSECURE ?= y is assigned in mk/config.mk.
+# But mk/config.mk is included after $(platform-dir)/conf.mk from
+# core/core.mk.
+# Since we are making decision based on CFG_INSECURE in this file
+# so we need to set it early here also.
+CFG_INSECURE ?= y
+
 # Get SoC associated with the PLATFORM_FLAVOR
 mx6ul-flavorlist = \
 	mx6ulevk \
@@ -64,20 +71,25 @@ mx8mq-flavorlist = \
 
 mx8mm-flavorlist = \
 	mx8mmevk \
-	mx8mm_cl_iot_gate
+	mx8mm_cl_iot_gate \
+	mx8mm_phyboard_polis \
+	mx8mm_phygate_tauri_l
 
 mx8mn-flavorlist = \
 	mx8mnevk
 
 mx8mp-flavorlist = \
 	mx8mpevk \
-	mx8mp_rsb3720_6g
+	mx8mp_rsb3720_6g \
+	mx8mp_phyboard_pollux \
+	mx8mp_libra_fpsc
 
 mx8qm-flavorlist = \
 	mx8qmmek \
 
 mx8qx-flavorlist = \
 	mx8qxpmek \
+	mx8dxmek \
 
 mx8dxl-flavorlist = \
 	mx8dxlevk \
@@ -87,6 +99,15 @@ mx8ulp-flavorlist = \
 
 mx93-flavorlist = \
 	mx93evk \
+
+mx95-flavorlist = \
+	mx95evk \
+
+mx91-flavorlist = \
+	mx91evk \
+
+mx943-flavorlist = \
+	mx943evk \
 
 ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6ul-flavorlist)))
 $(call force,CFG_MX6,y)
@@ -108,24 +129,29 @@ $(call force,CFG_MX6,y)
 $(call force,CFG_MX6Q,y)
 $(call force,CFG_TEE_CORE_NB_CORE,4)
 $(call force,CFG_TZC380,y)
+$(call force,CFG_CORE_HAS_GENERIC_TIMER,n)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6qp-flavorlist)))
 $(call force,CFG_MX6,y)
 $(call force,CFG_MX6QP,y)
 $(call force,CFG_TEE_CORE_NB_CORE,4)
+$(call force,CFG_CORE_HAS_GENERIC_TIMER,n)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6d-flavorlist)))
 $(call force,CFG_MX6,y)
 $(call force,CFG_MX6D,y)
 $(call force,CFG_TEE_CORE_NB_CORE,2)
 $(call force,CFG_TZC380,y)
+$(call force,CFG_CORE_HAS_GENERIC_TIMER,n)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6dl-flavorlist)))
 $(call force,CFG_MX6,y)
 $(call force,CFG_MX6DL,y)
 $(call force,CFG_TEE_CORE_NB_CORE,2)
 $(call force,CFG_TZC380,y)
+$(call force,CFG_CORE_HAS_GENERIC_TIMER,n)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6s-flavorlist)))
 $(call force,CFG_MX6,y)
 $(call force,CFG_MX6S,y)
 $(call force,CFG_TEE_CORE_NB_CORE,1)
+$(call force,CFG_CORE_HAS_GENERIC_TIMER,n)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6sl-flavorlist)))
 $(call force,CFG_MX6,y)
 $(call force,CFG_MX6SL,y)
@@ -133,6 +159,7 @@ $(call force,CFG_TEE_CORE_NB_CORE,1)
 $(call force,CFG_IMX_CAAM,n)
 $(call force,CFG_NXP_CAAM,n)
 $(call force,CFG_IMX_DCP,y)
+$(call force,CFG_CORE_HAS_GENERIC_TIMER,n)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6sll-flavorlist)))
 $(call force,CFG_MX6,y)
 $(call force,CFG_MX6SLL,y)
@@ -141,10 +168,12 @@ $(call force,CFG_IMX_CAAM,n)
 $(call force,CFG_NXP_CAAM,n)
 $(call force,CFG_IMX_DCP,y)
 $(call force,CFG_NO_SMP,y)
+$(call force,CFG_CORE_HAS_GENERIC_TIMER,n)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6sx-flavorlist)))
 $(call force,CFG_MX6,y)
 $(call force,CFG_MX6SX,y)
 $(call force,CFG_TEE_CORE_NB_CORE,1)
+$(call force,CFG_CORE_HAS_GENERIC_TIMER,n)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx7s-flavorlist)))
 $(call force,CFG_MX7,y)
 $(call force,CFG_TEE_CORE_NB_CORE,1)
@@ -163,24 +192,28 @@ else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx8mq-flavorlist)))
 $(call force,CFG_MX8MQ,y)
 $(call force,CFG_MX8M,y)
 $(call force,CFG_ARM64_core,y)
+$(call force,CFG_TZC380,y)
 CFG_DRAM_BASE ?= 0x40000000
 CFG_TEE_CORE_NB_CORE ?= 4
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx8mm-flavorlist)))
 $(call force,CFG_MX8MM,y)
 $(call force,CFG_MX8M,y)
 $(call force,CFG_ARM64_core,y)
+$(call force,CFG_TZC380,y)
 CFG_DRAM_BASE ?= 0x40000000
 CFG_TEE_CORE_NB_CORE ?= 4
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx8mn-flavorlist)))
 $(call force,CFG_MX8MN,y)
 $(call force,CFG_MX8M,y)
 $(call force,CFG_ARM64_core,y)
+$(call force,CFG_TZC380,y)
 CFG_DRAM_BASE ?= 0x40000000
 CFG_TEE_CORE_NB_CORE ?= 4
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx8mp-flavorlist)))
 $(call force,CFG_MX8MP,y)
 $(call force,CFG_MX8M,y)
 $(call force,CFG_ARM64_core,y)
+$(call force,CFG_TZC380,y)
 CFG_DRAM_BASE ?= 0x40000000
 CFG_TEE_CORE_NB_CORE ?= 4
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx8qm-flavorlist)))
@@ -207,7 +240,6 @@ CFG_IMX_LPUART ?= y
 CFG_DRAM_BASE ?= 0x80000000
 $(call force,CFG_TEE_CORE_NB_CORE,2)
 $(call force,CFG_IMX_OCOTP,n)
-$(call force,CFG_NXP_CAAM,n)
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx8ulp-flavorlist)))
 $(call force,CFG_MX8ULP,y)
 $(call force,CFG_ARM64_core,y)
@@ -217,7 +249,7 @@ CFG_TEE_CORE_NB_CORE ?= 2
 $(call force,CFG_NXP_SNVS,n)
 $(call force,CFG_IMX_OCOTP,n)
 CFG_IMX_MU ?= y
-CFG_IMX_ELE ?= y
+CFG_IMX_ELE ?= n
 else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx93-flavorlist)))
 $(call force,CFG_MX93,y)
 $(call force,CFG_ARM64_core,y)
@@ -228,6 +260,42 @@ $(call force,CFG_NXP_SNVS,n)
 $(call force,CFG_IMX_OCOTP,n)
 $(call force,CFG_TZC380,n)
 $(call force,CFG_CRYPTO_DRIVER,n)
+$(call force,CFG_NXP_CAAM,n)
+CFG_IMX_MU ?= y
+CFG_IMX_ELE ?= y
+else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx95-flavorlist)))
+$(call force,CFG_MX95,y)
+$(call force,CFG_ARM64_core,y)
+CFG_IMX_LPUART ?= y
+CFG_DRAM_BASE ?= 0x80000000
+CFG_TEE_CORE_NB_CORE ?= 6
+$(call force,CFG_NXP_SNVS,n)
+$(call force,CFG_IMX_OCOTP,n)
+$(call force,CFG_TZC380,n)
+$(call force,CFG_NXP_CAAM,n)
+CFG_IMX_MU ?= y
+CFG_IMX_ELE ?= y
+else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx91-flavorlist)))
+$(call force,CFG_MX91,y)
+$(call force,CFG_ARM64_core,y)
+CFG_IMX_LPUART ?= y
+CFG_DRAM_BASE ?= 0x80000000
+CFG_TEE_CORE_NB_CORE ?= 1
+$(call force,CFG_NXP_SNVS,n)
+$(call force,CFG_IMX_OCOTP,n)
+$(call force,CFG_TZC380,n)
+$(call force,CFG_NXP_CAAM,n)
+CFG_IMX_MU ?= y
+CFG_IMX_ELE ?= y
+else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx943-flavorlist)))
+$(call force,CFG_MX943,y)
+$(call force,CFG_ARM64_core,y)
+CFG_IMX_LPUART ?= y
+CFG_DRAM_BASE ?= 0x80000000
+CFG_TEE_CORE_NB_CORE ?= 4
+$(call force,CFG_NXP_SNVS,n)
+$(call force,CFG_IMX_OCOTP,n)
+$(call force,CFG_TZC380,n)
 $(call force,CFG_NXP_CAAM,n)
 CFG_IMX_MU ?= y
 CFG_IMX_ELE ?= y
@@ -371,6 +439,20 @@ CFG_NSEC_DDR_1_BASE ?= 0x80000000UL
 CFG_NSEC_DDR_1_SIZE ?= 0x40000000UL
 endif
 
+ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mm_phyboard_polis))
+CFG_DDR_SIZE ?= 0x40000000
+CFG_UART_BASE ?= UART3_BASE
+$(call force,CFG_CORE_LARGE_PHYS_ADDR,y)
+$(call force,CFG_CORE_ARM64_PA_BITS,36)
+endif
+
+ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mm_phygate_tauri_l))
+CFG_DDR_SIZE ?= 0x80000000
+CFG_UART_BASE ?= UART3_BASE
+$(call force,CFG_CORE_LARGE_PHYS_ADDR,y)
+$(call force,CFG_CORE_ARM64_PA_BITS,36)
+endif
+
 ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mnevk))
 CFG_DDR_SIZE ?= 0x80000000
 CFG_UART_BASE ?= UART2_BASE
@@ -379,6 +461,21 @@ endif
 ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mpevk))
 CFG_DDR_SIZE ?= UL(0x180000000)
 CFG_UART_BASE ?= UART2_BASE
+$(call force,CFG_CORE_LARGE_PHYS_ADDR,y)
+$(call force,CFG_CORE_ARM64_PA_BITS,36)
+$(call force,CFG_LPAE_ADDR_SPACE_BITS,36)
+endif
+
+ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mp_libra_fpsc))
+CFG_DDR_SIZE ?= 0x40000000
+CFG_UART_BASE ?= UART4_BASE
+$(call force,CFG_CORE_LARGE_PHYS_ADDR,y)
+$(call force,CFG_CORE_ARM64_PA_BITS,36)
+endif
+
+ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mp_phyboard_pollux))
+CFG_DDR_SIZE ?= 0x40000000
+CFG_UART_BASE ?= UART1_BASE
 $(call force,CFG_CORE_LARGE_PHYS_ADDR,y)
 $(call force,CFG_CORE_ARM64_PA_BITS,36)
 endif
@@ -399,9 +496,18 @@ CFG_NSEC_DDR_1_SIZE  ?= 0x380000000UL
 CFG_CORE_ARM64_PA_BITS ?= 40
 endif
 
+ifneq (,$(filter $(PLATFORM_FLAVOR),mx8dxmek))
+CFG_DDR_SIZE ?= 0x40000000
+CFG_UART_BASE ?= UART0_BASE
+$(call force,CFG_MX8DX,y)
+endif
+
 ifneq (,$(filter $(PLATFORM_FLAVOR),mx8dxlevk))
 CFG_DDR_SIZE ?= 0x40000000
 CFG_UART_BASE ?= UART0_BASE
+CFG_NSEC_DDR_1_BASE ?= 0x800000000UL
+CFG_NSEC_DDR_1_SIZE ?= 0x400000000UL
+CFG_CORE_ARM64_PA_BITS ?= 40
 endif
 
 ifneq (,$(filter $(PLATFORM_FLAVOR),mx8ulpevk))
@@ -409,9 +515,17 @@ CFG_DDR_SIZE ?= 0x80000000
 CFG_UART_BASE ?= UART5_BASE
 endif
 
-ifneq (,$(filter $(PLATFORM_FLAVOR),mx93evk))
+ifneq (,$(filter $(PLATFORM_FLAVOR),mx93evk mx91evk))
 CFG_DDR_SIZE ?= 0x80000000
 CFG_UART_BASE ?= UART1_BASE
+endif
+
+ifneq (,$(filter $(PLATFORM_FLAVOR),mx95evk mx943evk))
+CFG_DDR_SIZE ?= 0x80000000
+CFG_UART_BASE ?= UART1_BASE
+CFG_NSEC_DDR_1_BASE ?= 0x100000000UL
+CFG_NSEC_DDR_1_SIZE ?= 0x380000000UL
+CFG_CORE_ARM64_PA_BITS ?= 40
 endif
 
 # i.MX6 Solo/SL/SoloX/DualLite/Dual/Quad specific config
@@ -468,6 +582,21 @@ ifneq (,$(filter y, $(CFG_MX6) $(CFG_MX7)))
 CFG_IMX_CSU ?= y
 endif
 
+ifneq (,$(filter y, $(CFG_MX8M)))
+ifneq ($(CFG_INSECURE),y)
+$(call force,CFG_TZASC_REGION0_SECURE,y)
+endif
+endif
+
+# We can't make it default because of missing i.MX7 and i.MX9 support.
+# Once all platforms are supported we can remove the CFG_TZASC_CHECK_ENABLED
+# and perform the check always.
+ifneq (,$(filter y, $(CFG_MX6) $(CFG_MX8M)))
+ifneq ($(CFG_INSECURE),y)
+$(call force,CFG_TZASC_CHECK_ENABLED,y)
+endif
+endif
+
 ifeq ($(filter y, $(CFG_PSCI_ARM32)), y)
 CFG_HWSUPP_MEM_PERM_WXN = n
 CFG_IMX_WDOG ?= y
@@ -491,15 +620,25 @@ CFG_SHMEM_SIZE ?= 0x00200000
 CFG_TZDRAM_START ?= ($(CFG_DRAM_BASE) - $(CFG_TZDRAM_SIZE) - $(CFG_SHMEM_SIZE) + $(CFG_DDR_SIZE))
 CFG_SHMEM_START ?= ($(CFG_TZDRAM_START) + $(CFG_TZDRAM_SIZE))
 
+# Enable embedded tests by default
+CFG_ENABLE_EMBEDDED_TESTS ?= y
+CFG_ATTESTATION_PTA ?= y
+
+# Set default heap size for imx platforms to 128k
+CFG_CORE_HEAP_SIZE ?= 131072
+
 CFG_CRYPTO_SIZE_OPTIMIZATION ?= n
 CFG_MMAP_REGIONS ?= 24
 
 # SE05X and OCOTP both implement tee_otp_get_die_id()
 ifeq ($(CFG_NXP_SE05X),y)
 $(call force,CFG_IMX_OCOTP,n)
+$(call force,CFG_CORE_HUK_SUBKEY_COMPAT_USE_OTP_DIE_ID,n)
 endif
 CFG_IMX_OCOTP ?= y
 CFG_IMX_DIGPROG ?= y
+CFG_PKCS11_TA ?= y
+CFG_CORE_HUK_SUBKEY_COMPAT_USE_OTP_DIE_ID ?= y
 
 # Almost all platforms include CAAM HW Modules, except the
 # ones forced to be disabled
@@ -518,4 +657,3 @@ CFG_IMX_CAAM ?= y
 endif
 
 endif
-

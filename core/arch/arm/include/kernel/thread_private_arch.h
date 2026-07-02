@@ -37,18 +37,20 @@
 #endif /*ARM32*/
 
 #ifdef ARM64
-#if defined(__clang__) && !defined(__OPTIMIZE_SIZE__)
+#if (defined(__clang__) && !defined(__OPTIMIZE_SIZE__)) || \
+	defined(CFG_CORE_SANITIZE_KADDRESS) || \
+	defined(CFG_CORE_DEBUG_CHECK_STACKS) || defined(CFG_NS_VIRTUALIZATION)
 #define STACK_TMP_SIZE		(4096 + STACK_TMP_OFFS + CFG_STACK_TMP_EXTRA)
 #else
 #define STACK_TMP_SIZE		(2048 + STACK_TMP_OFFS + CFG_STACK_TMP_EXTRA)
 #endif
-#define STACK_THREAD_SIZE	(8192 + CFG_STACK_THREAD_EXTRA)
-
-#if TRACE_LEVEL > 0
-#define STACK_ABT_SIZE		3072
+#if defined(CFG_CORE_SANITIZE_KADDRESS) || defined(CFG_CORE_DEBUG_CHECK_STACKS)
+#define STACK_THREAD_SIZE	(12288 + CFG_STACK_THREAD_EXTRA)
 #else
-#define STACK_ABT_SIZE		1024
+#define STACK_THREAD_SIZE	(8192 + CFG_STACK_THREAD_EXTRA)
 #endif
+
+#define STACK_ABT_SIZE		4096
 #endif /*ARM64*/
 
 #ifdef CFG_CORE_DEBUG_CHECK_STACKS
@@ -255,4 +257,12 @@ void thread_scall_handler(struct thread_scall_regs *regs);
 
 void thread_spmc_register_secondary_ep(vaddr_t ep);
 #endif /*__ASSEMBLER__*/
+
+/*
+ * Used in entry_a64.S entry_a32.S to allocate a temporary
+ * thread_core_local[0] for the boot CPU and the associated abort and
+ * temporary stacks.
+ */
+#define THREAD_BOOT_INIT_TMP_ALLOC	(SMALL_PAGE_SIZE * 6)
+
 #endif /*__KERNEL_THREAD_PRIVATE_ARCH_H*/

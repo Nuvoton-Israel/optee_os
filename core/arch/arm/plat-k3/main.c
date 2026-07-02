@@ -6,9 +6,9 @@
 
 #include <console.h>
 #include <drivers/gic.h>
-#include <drivers/sec_proxy.h>
 #include <drivers/serial8250_uart.h>
 #include <drivers/ti_sci.h>
+#include <drivers/ti_sci_transport.h>
 #include <kernel/boot.h>
 #include <kernel/panic.h>
 #include <kernel/tee_common_otp.h>
@@ -24,11 +24,22 @@ register_phys_mem_pgdir(MEM_AREA_IO_SEC, GICC_BASE, GICC_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, GICD_BASE, GICD_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_NSEC, CONSOLE_UART_BASE,
 		  SERIAL8250_UART_REG_SIZE);
+#if defined(PLATFORM_FLAVOR_am62lx)
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, TI_MAILBOX_TX_BASE,
+			TI_MAILBOX_DEFAULT_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, TI_MAILBOX_RX_BASE,
+			TI_MAILBOX_DEFAULT_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, MAILBOX_TX_START_REGION,
+			TI_MAILBOX_DEFAULT_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, MAILBOX_RX_START_REGION,
+			TI_MAILBOX_DEFAULT_SIZE);
+#else
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, SEC_PROXY_DATA_BASE,
 			SEC_PROXY_DATA_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, SEC_PROXY_SCFG_BASE,
 			SEC_PROXY_SCFG_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, SEC_PROXY_RT_BASE, SEC_PROXY_RT_SIZE);
+#endif
 register_ddr(DRAM0_BASE, DRAM0_SIZE);
 register_ddr(DRAM1_BASE, DRAM1_SIZE);
 
@@ -39,10 +50,10 @@ void boot_primary_init_intc(void)
 
 void boot_secondary_init_intc(void)
 {
-	gic_cpu_init();
+	gic_init_per_cpu();
 }
 
-void console_init(void)
+void plat_console_init(void)
 {
 	serial8250_uart_init(&console_data, CONSOLE_UART_BASE,
 			     CONSOLE_UART_CLK_IN_HZ, CONSOLE_BAUDRATE);
@@ -53,7 +64,7 @@ static TEE_Result init_ti_sci(void)
 {
 	TEE_Result ret = TEE_SUCCESS;
 
-	ret = k3_sec_proxy_init();
+	ret = ti_sci_transport_init();
 	if (ret != TEE_SUCCESS)
 		return ret;
 
@@ -64,7 +75,13 @@ static TEE_Result init_ti_sci(void)
 	return TEE_SUCCESS;
 }
 
-service_init(init_ti_sci);
+/*
+ * TISCI services are required for initialization of TRNG service that gets
+ * initialized during service_init_crypto.
+ *
+ * Initialize TISCI service just before service_init_crypto.
+ */
+early_init_late(init_ti_sci);
 
 static TEE_Result secure_boot_information(void)
 {

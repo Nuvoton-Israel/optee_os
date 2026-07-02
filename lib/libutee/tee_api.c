@@ -133,7 +133,7 @@ static TEE_Result map_tmp_param(struct utee_params *up, void **tmp_buf,
 			if (b && s &&
 			    !TEE_CheckMemoryAccessRights(flags, b, s)) {
 				is_tmp_mem[n] = true;
-				tbl += ROUNDUP(s, tmp_align);
+				tbl += ROUNDUP2(s, tmp_align);
 			}
 			break;
 		default:
@@ -159,7 +159,7 @@ static TEE_Result map_tmp_param(struct utee_params *up, void **tmp_buf,
 			s = up->vals[n * 2 + 1];
 			b = (void *)(vaddr_t)up->vals[n * 2];
 			tmp_va[n] = tb;
-			tb += ROUNDUP(s, tmp_align);
+			tb += ROUNDUP2(s, tmp_align);
 			up->vals[n * 2] = (vaddr_t)tmp_va[n];
 			if (TEE_PARAM_TYPE_GET(up->types, n) !=
 			    TEE_PARAM_TYPE_MEMREF_OUTPUT)
@@ -607,14 +607,14 @@ const void *TEE_GetInstanceData(void)
 	return tee_api_instance_data;
 }
 
-void *TEE_MemMove(void *dest, const void *src, size_t size)
+void TEE_MemMove(void *dest, const void *src, size_t size)
 {
-	return memmove(dest, src, size);
+	memmove(dest, src, size);
 }
 
-void *__GP11_TEE_MemMove(void *dest, const void *src, uint32_t size)
+void __GP11_TEE_MemMove(void *dest, const void *src, uint32_t size)
 {
-	return TEE_MemMove(dest, src, size);
+	TEE_MemMove(dest, src, size);
 }
 
 int32_t TEE_MemCompare(const void *buffer1, const void *buffer2, size_t size)
@@ -753,28 +753,30 @@ static bool addr_is_in_no_share_heap(void *p)
 
 void *TEE_Realloc(void *buffer, size_t newSize)
 {
-	if (!newSize) {
-		TEE_Free(buffer);
+	bool no_share = (buffer == TEE_NULL_SIZED_NO_SHARE_VA ||
+			 addr_is_in_no_share_heap(buffer));
+	void *p = NULL;
 
-		if (addr_is_in_no_share_heap(buffer))
+	if (buffer != TEE_NULL_SIZED_NO_SHARE_VA && buffer != TEE_NULL_SIZED_VA)
+		p = buffer;
+
+	if (!newSize) {
+		TEE_Free(p);
+		if (no_share)
 			return TEE_NULL_SIZED_NO_SHARE_VA;
 		else
 			return TEE_NULL_SIZED_VA;
 	}
 
-	if (buffer == TEE_NULL_SIZED_VA)
-		return calloc(1, newSize);
-	if (buffer == TEE_NULL_SIZED_NO_SHARE_VA) {
+	if (no_share) {
 		if (!__ta_no_share_malloc_ctx)
 			return NULL;
-		return raw_calloc(0, 0, 1, newSize, __ta_no_share_malloc_ctx);
+		return raw_malloc_flags(MAF_ZERO_INIT, p, 0, 0,
+					MALLOC_DEFAULT_ALIGNMENT, 1, newSize,
+					__ta_no_share_malloc_ctx);
 	}
 
-	if (addr_is_in_no_share_heap(buffer))
-		return raw_realloc(buffer, 0, 0, newSize,
-				   __ta_no_share_malloc_ctx);
-	else
-		return realloc(buffer, newSize);
+	return malloc_flags(MAF_ZERO_INIT, p, 1, newSize);
 }
 
 void *__GP11_TEE_Realloc(void *buffer, uint32_t newSize)

@@ -13,7 +13,7 @@
 #include <kernel/dt_driver.h>
 #include <matrix.h>
 #include <mm/core_memprot.h>
-#include <sama5d2.h>
+#include <platform_config.h>
 
 #define RTC_VAL(reg, val)	(((val) >> RTC_## reg ## _SHIFT) & \
 				 RTC_## reg ##_MASK)
@@ -277,12 +277,15 @@ static const struct rtc_ops atmel_rtc_ops = {
 
 static struct rtc atmel_rtc = {
 	.ops = &atmel_rtc_ops,
-	.range_min = { 1900, 1, 1, 0, 0, 0, 0 },
-	.range_max = { 2099, 12, 31, 23, 59, 59, 0 },
+	.range_min = RTC_TIME(1900, 0, 1, 1, 0, 0, 0, 0),
+	.range_max = RTC_TIME(2099, 11, 31, 4, 23, 59, 59, 999),
 };
 
+/* Non-null reference for compat data */
+static const uint8_t rtc_always_secure;
+
 static TEE_Result atmel_rtc_probe(const void *fdt, int node,
-				  const void *compat_data __unused)
+				  const void *compat_data)
 {
 	size_t size = 0;
 
@@ -292,7 +295,8 @@ static TEE_Result atmel_rtc_probe(const void *fdt, int node,
 	if (fdt_get_status(fdt, node) != DT_STATUS_OK_SEC)
 		return TEE_ERROR_BAD_PARAMETERS;
 
-	matrix_configure_periph_secure(AT91C_ID_SYS);
+	if (compat_data != &rtc_always_secure)
+		matrix_configure_periph_secure(AT91C_ID_SYS);
 
 	if (dt_map_dev(fdt, node, &rtc_base, &size, DT_MAP_AUTO) < 0)
 		return TEE_ERROR_GENERIC;
@@ -309,6 +313,10 @@ static TEE_Result atmel_rtc_probe(const void *fdt, int node,
 
 static const struct dt_device_match atmel_rtc_match_table[] = {
 	{ .compatible = "atmel,sama5d2-rtc" },
+	{
+		.compatible = "microchip,sama7g5-rtc",
+		.compat_data = &rtc_always_secure,
+	},
 	{ }
 };
 

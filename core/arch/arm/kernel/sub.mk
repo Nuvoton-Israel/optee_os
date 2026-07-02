@@ -2,6 +2,9 @@ srcs-y += rpc_io_i2c.c
 srcs-y += idle.c
 
 srcs-$(CFG_SECURE_TIME_SOURCE_CNTPCT) += tee_time_arm_cntpct.c
+ifeq ($(CFG_CALLOUT),y)
+srcs-$(CFG_ARM64_core) += generic_timer.c
+endif
 srcs-$(CFG_ARM64_core) += timer_a64.c
 
 srcs-$(CFG_ARM32_core) += spin_lock_a32.S
@@ -24,7 +27,6 @@ endif
 ifeq ($(CFG_CORE_FFA),y)
 srcs-y += thread_spmc.c
 cppflags-thread_spmc.c-y += -DTEE_IMPL_GIT_SHA1=$(TEE_IMPL_GIT_SHA1)
-srcs-$(CFG_ARM32_core) += thread_spmc_a32.S
 srcs-$(CFG_ARM64_core) += thread_spmc_a64.S
 else
 srcs-y += thread_optee_smc.c
@@ -53,6 +55,9 @@ srcs-$(CFG_ARM64_core) += unwind_arm64.c
 endif
 
 srcs-$(CFG_NS_VIRTUALIZATION) += virtualization.c
+ifeq ($(CFG_SEMIHOSTING),y)
+srcs-$(CFG_ARM64_core) += semihosting_a64.S
+endif
 
 srcs-y += link_dummies_paged.c
 srcs-y += link_dummies_init.c
@@ -64,7 +69,7 @@ asm-defines-y += asm-defines.c
 #     <asm.h> includes <generated/arm32_sysreg.h>
 #                  and <generated/arm32_gicv3_sysreg.h> (optional)
 asm-defines-asm-defines.c-deps += $(out-dir)/core/include/generated/arm32_sysreg.h
-ifeq ($(CFG_ARM_GICV3),y)
+ifeq ($(_CFG_ARM_V3_OR_V4),y)
 asm-defines-asm-defines.c-deps += $(out-dir)/core/include/generated/arm32_gicv3_sysreg.h
 endif
 

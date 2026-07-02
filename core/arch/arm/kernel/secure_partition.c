@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 /*
- * Copyright (c) 2020-2023, Arm Limited.
+ * Copyright (c) 2020-2024, Arm Limited.
  */
-#include <bench.h>
 #include <crypto/crypto.h>
 #include <initcall.h>
 #include <kernel/boot.h>
@@ -20,22 +19,28 @@
 #include <mm/core_mmu.h>
 #include <mm/fobj.h>
 #include <mm/mobj.h>
+#include <mm/phys_mem.h>
 #include <mm/vm.h>
 #include <optee_ffa.h>
 #include <stdio.h>
 #include <string.h>
-#include <tee_api_types.h>
 #include <tee/uuid.h>
+#include <tee_api_types.h>
 #include <trace.h>
 #include <types_ext.h>
 #include <utee_defines.h>
 #include <util.h>
 #include <zlib.h>
 
+#define BOUNCE_BUFFER_SIZE		4096
+
+#define UNDEFINED_BOOT_ORDER_VALUE	UINT32_MAX
+
 #define SP_MANIFEST_ATTR_READ		BIT(0)
 #define SP_MANIFEST_ATTR_WRITE		BIT(1)
 #define SP_MANIFEST_ATTR_EXEC		BIT(2)
 #define SP_MANIFEST_ATTR_NSEC		BIT(3)
+#define SP_MANIFEST_ATTR_GP		BIT(4)
 
 #define SP_MANIFEST_ATTR_RO		(SP_MANIFEST_ATTR_READ)
 #define SP_MANIFEST_ATTR_RW		(SP_MANIFEST_ATTR_READ | \
@@ -51,6 +56,16 @@
 #define SP_MANIFEST_NS_INT_QUEUED	(0x0)
 #define SP_MANIFEST_NS_INT_MANAGED_EXIT	(0x1)
 #define SP_MANIFEST_NS_INT_SIGNALED	(0x2)
+
+#define SP_MANIFEST_EXEC_STATE_AARCH64	(0x0)
+#define SP_MANIFEST_EXEC_STATE_AARCH32	(0x1)
+
+#define SP_MANIFEST_DIRECT_REQ_RECEIVE	BIT(0)
+#define SP_MANIFEST_DIRECT_REQ_SEND	BIT(1)
+#define SP_MANIFEST_INDIRECT_REQ	BIT(2)
+
+#define SP_MANIFEST_VM_CREATED_MSG	BIT(0)
+#define SP_MANIFEST_VM_DESTROYED_MSG	BIT(1)
 
 #define SP_PKG_HEADER_MAGIC (0x474b5053)
 #define SP_PKG_HEADER_VERSION_V1 (0x1)
@@ -114,21 +129,31 @@ struct sp_session *sp_get_session(uint32_t session_id)
 }
 
 TEE_Result sp_partition_info_get(uint32_t ffa_vers, void *buf, size_t buf_size,
-				 const TEE_UUID *ffa_uuid, size_t *elem_count,
-				 bool count_only)
+				 const uint32_t ffa_uuid_words[4],
+				 size_t *elem_count, bool count_only)
 {
 	TEE_Result res = TEE_SUCCESS;
-	uint32_t part_props = FFA_PART_PROP_DIRECT_REQ_RECV |
-			      FFA_PART_PROP_DIRECT_REQ_SEND;
 	struct sp_session *s = NULL;
+	TEE_UUID uuid = { };
+	TEE_UUID *ffa_uuid = NULL;
+	enum sp_status st = sp_idle;
+
+	if (ffa_uuid_words) {
+		tee_uuid_from_octets(&uuid, (void *)ffa_uuid_words);
+		ffa_uuid = &uuid;
+	}
 
 	TAILQ_FOREACH(s, &open_sp_sessions, link) {
 		if (ffa_uuid &&
 		    memcmp(&s->ffa_uuid, ffa_uuid, sizeof(*ffa_uuid)))
 			continue;
 
-		if (s->state == sp_dead)
+		cpu_spin_lock(&s->spinlock);
+		st = s->state;
+		cpu_spin_unlock(&s->spinlock);
+		if (st == sp_dead)
 			continue;
+
 		if (!count_only && !res) {
 			uint32_t uuid_words[4] = { 0 };
 
@@ -136,7 +161,7 @@ TEE_Result sp_partition_info_get(uint32_t ffa_vers, void *buf, size_t buf_size,
 			res = spmc_fill_partition_entry(ffa_vers, buf, buf_size,
 							*elem_count,
 							s->endpoint_id, 1,
-							part_props, uuid_words);
+							s->props, uuid_words);
 		}
 		*elem_count += 1;
 	}
@@ -168,17 +193,29 @@ bool sp_has_exclusive_access(struct sp_mem_map_region *mem,
 	return !sp_mem_is_shared(mem);
 }
 
-static uint16_t new_session_id(struct sp_sessions_head *open_sessions)
+static bool endpoint_id_is_valid(uint32_t id)
 {
-	struct sp_session *last = NULL;
-	uint16_t id = SPMC_ENDPOINT_ID + 1;
+	/*
+	 * These IDs are assigned at the SPMC init so already have valid values
+	 * by the time this function gets first called
+	 */
+	return !spmc_is_reserved_id(id) && !spmc_find_lsp_by_sp_id(id) &&
+	       id >= FFA_SWD_ID_MIN && id <= FFA_SWD_ID_MAX;
+}
 
-	last = TAILQ_LAST(open_sessions, sp_sessions_head);
-	if (last)
-		id = last->endpoint_id + 1;
+static TEE_Result new_session_id(uint16_t *endpoint_id)
+{
+	uint32_t id = 0;
 
-	assert(id > SPMC_ENDPOINT_ID);
-	return id;
+	/* Find the first available endpoint id */
+	for (id = FFA_SWD_ID_MIN; id <= FFA_SWD_ID_MAX; id++) {
+		if (endpoint_id_is_valid(id) && !sp_get_session(id)) {
+			*endpoint_id = id;
+			return TEE_SUCCESS;
+		}
+	}
+
+	return TEE_ERROR_BAD_FORMAT;
 }
 
 static TEE_Result sp_create_ctx(const TEE_UUID *bin_uuid, struct sp_session *s)
@@ -201,6 +238,10 @@ static TEE_Result sp_create_ctx(const TEE_UUID *bin_uuid, struct sp_session *s)
 
 	set_sp_ctx_ops(&spc->ts_ctx);
 
+#ifdef CFG_TA_PAUTH
+	crypto_rng_read(&spc->uctx.keys, sizeof(spc->uctx.keys));
+#endif
+
 	return TEE_SUCCESS;
 
 err:
@@ -208,8 +249,32 @@ err:
 	return res;
 }
 
+/*
+ * Insert a new sp_session to the sessions list, so that it is ordered
+ * by boot_order.
+ */
+static void insert_session_ordered(struct sp_sessions_head *open_sessions,
+				   struct sp_session *session)
+{
+	struct sp_session *s = NULL;
+
+	if (!open_sessions || !session)
+		return;
+
+	TAILQ_FOREACH(s, &open_sp_sessions, link) {
+		if (s->boot_order > session->boot_order)
+			break;
+	}
+
+	if (!s)
+		TAILQ_INSERT_TAIL(open_sessions, session, link);
+	else
+		TAILQ_INSERT_BEFORE(s, session, link);
+}
+
 static TEE_Result sp_create_session(struct sp_sessions_head *open_sessions,
 				    const TEE_UUID *bin_uuid,
+				    const uint32_t boot_order,
 				    struct sp_session **sess)
 {
 	TEE_Result res = TEE_SUCCESS;
@@ -218,18 +283,21 @@ static TEE_Result sp_create_session(struct sp_sessions_head *open_sessions,
 	if (!s)
 		return TEE_ERROR_OUT_OF_MEMORY;
 
-	s->endpoint_id = new_session_id(open_sessions);
-	if (!s->endpoint_id) {
-		res = TEE_ERROR_OVERFLOW;
+	s->boot_order = boot_order;
+
+	/* Other properties are filled later, based on the SP's manifest */
+	s->props = FFA_PART_PROP_IS_PE_ID;
+
+	res = new_session_id(&s->endpoint_id);
+	if (res)
 		goto err;
-	}
 
 	DMSG("Loading Secure Partition %pUl", (void *)bin_uuid);
 	res = sp_create_ctx(bin_uuid, s);
 	if (res)
 		goto err;
 
-	TAILQ_INSERT_TAIL(open_sessions, s, link);
+	insert_session_ordered(open_sessions, s);
 	*sess = s;
 	return TEE_SUCCESS;
 
@@ -350,6 +418,24 @@ static TEE_Result sp_dt_get_u32(const void *fdt, int node, const char *property,
 	return TEE_SUCCESS;
 }
 
+static TEE_Result sp_dt_get_u16(const void *fdt, int node, const char *property,
+				uint16_t *value)
+{
+	const fdt16_t *p = NULL;
+	int len = 0;
+
+	p = fdt_getprop(fdt, node, property, &len);
+	if (!p)
+		return TEE_ERROR_ITEM_NOT_FOUND;
+
+	if (len != sizeof(*p))
+		return TEE_ERROR_BAD_FORMAT;
+
+	*value = fdt16_to_cpu(*p);
+
+	return TEE_SUCCESS;
+}
+
 static TEE_Result sp_dt_get_uuid(const void *fdt, int node,
 				 const char *property, TEE_UUID *uuid)
 {
@@ -408,10 +494,13 @@ static TEE_Result load_binary_sp(struct ts_session *s,
 				 struct user_mode_ctx *uctx)
 {
 	size_t bin_size = 0, bin_size_rounded = 0, bin_page_count = 0;
+	size_t bb_size = ROUNDUP(BOUNCE_BUFFER_SIZE, SMALL_PAGE_SIZE);
+	size_t bb_num_pages = bb_size / SMALL_PAGE_SIZE;
 	const struct ts_store_ops *store_ops = NULL;
 	struct ts_store_handle *handle = NULL;
 	TEE_Result res = TEE_SUCCESS;
 	tee_mm_entry_t *mm = NULL;
+	struct fobj *fobj = NULL;
 	struct mobj *mobj = NULL;
 	uaddr_t base_addr = 0;
 	uint32_t vm_flags = 0;
@@ -422,6 +511,21 @@ static TEE_Result load_binary_sp(struct ts_session *s,
 		return TEE_ERROR_BAD_PARAMETERS;
 
 	DMSG("Loading raw binary format SP %pUl", &uctx->ts_ctx->uuid);
+
+	/* Initialize the bounce buffer */
+	fobj = fobj_sec_mem_alloc(bb_num_pages);
+	mobj = mobj_with_fobj_alloc(fobj, NULL, TEE_MATTR_MEM_TYPE_TAGGED);
+	fobj_put(fobj);
+	if (!mobj)
+		return TEE_ERROR_OUT_OF_MEMORY;
+
+	res = vm_map(uctx, &va, bb_size, TEE_MATTR_PRW, 0, mobj, 0);
+	mobj_put(mobj);
+	if (res)
+		return res;
+
+	uctx->bbuf = (uint8_t *)va;
+	uctx->bbuf_size = BOUNCE_BUFFER_SIZE;
 
 	vm_set_ctx(uctx->ts_ctx);
 
@@ -445,7 +549,7 @@ static TEE_Result load_binary_sp(struct ts_session *s,
 	bin_page_count = bin_size_rounded / SMALL_PAGE_SIZE;
 
 	/* Allocate memory */
-	mm = tee_mm_alloc(&tee_mm_sec_ddr, bin_size_rounded);
+	mm = phys_mem_ta_alloc(bin_size_rounded);
 	if (!mm) {
 		res = TEE_ERROR_OUT_OF_MEMORY;
 		goto err;
@@ -465,13 +569,14 @@ static TEE_Result load_binary_sp(struct ts_session *s,
 		goto err_free_mobj;
 
 	/* Map memory area for the SP binary */
+	va = 0;
 	res = vm_map(uctx, &va, bin_size_rounded, TEE_MATTR_URWX,
 		     vm_flags, mobj, 0);
 	if (res)
 		goto err_free_mobj;
 
 	/* Read SP binary into the previously mapped memory area */
-	res = store_ops->read(handle, (void *)va, bin_size);
+	res = store_ops->read(handle, NULL, (void *)va, bin_size);
 	if (res)
 		goto err_unmap;
 
@@ -511,6 +616,7 @@ static TEE_Result sp_open_session(struct sp_session **sess,
 				  struct sp_sessions_head *open_sessions,
 				  const TEE_UUID *ffa_uuid,
 				  const TEE_UUID *bin_uuid,
+				  const uint32_t boot_order,
 				  const void *fdt)
 {
 	TEE_Result res = TEE_SUCCESS;
@@ -521,7 +627,7 @@ static TEE_Result sp_open_session(struct sp_session **sess,
 	if (!find_secure_partition(bin_uuid))
 		return TEE_ERROR_ITEM_NOT_FOUND;
 
-	res = sp_create_session(open_sessions, bin_uuid, &s);
+	res = sp_create_session(open_sessions, bin_uuid, boot_order, &s);
 	if (res != TEE_SUCCESS) {
 		DMSG("sp_create_session failed %#"PRIx32, res);
 		return res;
@@ -555,8 +661,12 @@ static TEE_Result sp_open_session(struct sp_session **sess,
 		return TEE_ERROR_TARGET_DEAD;
 	}
 
-	/* Make the SP ready for its first run */
-	s->state = sp_idle;
+	/*
+	 * Make the SP ready for its first run.
+	 * Set state to busy to prevent other endpoints from sending messages to
+	 * the SP before its boot phase is done.
+	 */
+	s->state = sp_busy;
 	s->caller_id = 0;
 	sp_init_set_registers(ctx);
 	memcpy(&s->ffa_uuid, ffa_uuid, sizeof(*ffa_uuid));
@@ -633,7 +743,7 @@ static void fill_boot_info_1_0(vaddr_t buf, const void *fdt)
 	info->nvp[0].size = fdt_totalsize(fdt);
 }
 
-static void fill_boot_info_1_1(vaddr_t buf, const void *fdt)
+static void fill_boot_info_1_1(vaddr_t buf, const void *fdt, uint32_t vers)
 {
 	size_t desc_offs = ROUNDUP(sizeof(struct ffa_boot_info_header_1_1), 8);
 	struct ffa_boot_info_header_1_1 *header =
@@ -642,7 +752,7 @@ static void fill_boot_info_1_1(vaddr_t buf, const void *fdt)
 		(struct ffa_boot_info_1_1 *)(buf + desc_offs);
 
 	header->signature = FFA_BOOT_INFO_SIGNATURE;
-	header->version = FFA_BOOT_INFO_VERSION;
+	header->version = vers;
 	header->blob_size = desc_offs + sizeof(struct ffa_boot_info_1_1);
 	header->desc_size = sizeof(struct ffa_boot_info_1_1);
 	header->desc_count = 1;
@@ -659,21 +769,17 @@ static void fill_boot_info_1_1(vaddr_t buf, const void *fdt)
 }
 
 static TEE_Result create_and_map_boot_info(struct sp_ctx *ctx, const void *fdt,
-					   struct thread_smc_args *args,
-					   vaddr_t *va, size_t *mapped_size)
+					   struct thread_smc_1_2_regs *args,
+					   vaddr_t *va, size_t *mapped_size,
+					   uint32_t sp_ffa_version)
 {
 	size_t total_size = ROUNDUP(CFG_SP_INIT_INFO_MAX_SIZE, SMALL_PAGE_SIZE);
 	size_t num_pages = total_size / SMALL_PAGE_SIZE;
 	uint32_t perm = TEE_MATTR_UR | TEE_MATTR_PRW;
 	TEE_Result res = TEE_SUCCESS;
-	uint32_t sp_ffa_version = 0;
 	struct fobj *f = NULL;
 	struct mobj *m = NULL;
 	uint32_t info_reg = 0;
-
-	res = sp_dt_get_u32(fdt, 0, "ffa-version", &sp_ffa_version);
-	if (res)
-		return res;
 
 	f = fobj_sec_mem_alloc(num_pages);
 	m = mobj_with_fobj_alloc(f, NULL, TEE_MATTR_MEM_TYPE_TAGGED);
@@ -693,7 +799,8 @@ static TEE_Result create_and_map_boot_info(struct sp_ctx *ctx, const void *fdt,
 		fill_boot_info_1_0(*va, fdt);
 		break;
 	case MAKE_FFA_VERSION(1, 1):
-		fill_boot_info_1_1(*va, fdt);
+	case MAKE_FFA_VERSION(1, 2):
+		fill_boot_info_1_1(*va, fdt, sp_ffa_version);
 		break;
 	default:
 		EMSG("Unknown FF-A version: %#"PRIx32, sp_ffa_version);
@@ -805,6 +912,15 @@ static TEE_Result handle_fdt_load_relative_mem_regions(struct sp_ctx *ctx,
 			return TEE_ERROR_BAD_FORMAT;
 		}
 
+		if (IS_ENABLED(CFG_TA_BTI) &&
+		    attributes & SP_MANIFEST_ATTR_GP) {
+			if (!(attributes & SP_MANIFEST_ATTR_RX)) {
+				EMSG("Guard only executable region");
+				return TEE_ERROR_BAD_FORMAT;
+			}
+			perm |= TEE_MATTR_GUARDED;
+		}
+
 		res = sp_dt_get_u32(fdt, subnode, "load-flags", &flags);
 		if (res != TEE_SUCCESS && res != TEE_ERROR_ITEM_NOT_FOUND) {
 			EMSG("Optional field with invalid value: flags");
@@ -826,7 +942,7 @@ static TEE_Result handle_fdt_load_relative_mem_regions(struct sp_ctx *ctx,
 			struct mobj *m = NULL;
 			unsigned int idx = 0;
 
-			mm = tee_mm_alloc(&tee_mm_sec_ddr, size);
+			mm = phys_mem_ta_alloc(size);
 			if (!mm)
 				return TEE_ERROR_OUT_OF_MEMORY;
 
@@ -1019,8 +1135,10 @@ static TEE_Result read_manifest_endpoint_id(struct sp_session *s)
 	if (!sp_dt_get_u32(s->fdt, 0, "id", &endpoint_id)) {
 		TEE_Result res = TEE_ERROR_GENERIC;
 
-		if (endpoint_id <= SPMC_ENDPOINT_ID)
+		if (!endpoint_id_is_valid(endpoint_id)) {
+			EMSG("Invalid endpoint ID 0x%"PRIx32, endpoint_id);
 			return TEE_ERROR_BAD_FORMAT;
+		}
 
 		res = swap_sp_endpoints(endpoint_id, s->endpoint_id);
 		if (res)
@@ -1132,6 +1250,15 @@ static TEE_Result handle_fdt_mem_regions(struct sp_ctx *ctx, void *fdt)
 			return TEE_ERROR_BAD_FORMAT;
 		}
 
+		if (IS_ENABLED(CFG_TA_BTI) &&
+		    attributes & SP_MANIFEST_ATTR_GP) {
+			if (!(attributes & SP_MANIFEST_ATTR_RX)) {
+				EMSG("Guard only executable region");
+				return TEE_ERROR_BAD_FORMAT;
+			}
+			perm |= TEE_MATTR_GUARDED;
+		}
+
 		/*
 		 * The SP is a secure endpoint, security attribute can be
 		 * secure or non-secure.
@@ -1148,7 +1275,7 @@ static TEE_Result handle_fdt_mem_regions(struct sp_ctx *ctx, void *fdt)
 
 		if (alloc_needed) {
 			/* Base address is missing, we have to allocate */
-			mm = tee_mm_alloc(&tee_mm_sec_ddr, size);
+			mm = phys_mem_ta_alloc(size);
 			if (!mm)
 				return TEE_ERROR_OUT_OF_MEMORY;
 
@@ -1300,6 +1427,22 @@ static TEE_Result handle_hw_features(void *fdt)
 			return res;
 	}
 
+	/* Modify the property only if it's already present */
+	if (!sp_dt_get_u32(fdt, node, "bti", &val)) {
+		res = fdt_setprop_u32(fdt, node, "bti",
+				      feat_bti_is_implemented());
+		if (res)
+			return res;
+	}
+
+	/* Modify the property only if it's already present */
+	if (!sp_dt_get_u32(fdt, node, "pauth", &val)) {
+		res = fdt_setprop_u32(fdt, node, "pauth",
+				      feat_pauth_is_implemented());
+		if (res)
+			return res;
+	}
+
 	return TEE_SUCCESS;
 }
 
@@ -1334,23 +1477,152 @@ static TEE_Result read_ns_interrupts_action(const void *fdt,
 	return TEE_SUCCESS;
 }
 
+static TEE_Result read_ffa_version(const void *fdt, struct sp_session *s)
+{
+	TEE_Result res = TEE_ERROR_BAD_PARAMETERS;
+	uint32_t ffa_version = 0;
+
+	res = sp_dt_get_u32(fdt, 0, "ffa-version", &ffa_version);
+	if (res) {
+		EMSG("Mandatory property is missing: ffa-version");
+		return res;
+	}
+
+	if (ffa_version != FFA_VERSION_1_0 && ffa_version != FFA_VERSION_1_1) {
+		EMSG("Invalid FF-A version value: 0x%08"PRIx32, ffa_version);
+		return TEE_ERROR_BAD_PARAMETERS;
+	}
+
+	s->rxtx.ffa_vers = ffa_version;
+
+	return TEE_SUCCESS;
+}
+
+static TEE_Result read_sp_exec_state(const void *fdt, struct sp_session *s)
+{
+	TEE_Result res = TEE_ERROR_BAD_PARAMETERS;
+	uint32_t exec_state = 0;
+
+	res = sp_dt_get_u32(fdt, 0, "execution-state", &exec_state);
+	if (res) {
+		EMSG("Mandatory property is missing: execution-state");
+		return res;
+	}
+
+	/* Currently only AArch64 SPs are supported */
+	if (exec_state == SP_MANIFEST_EXEC_STATE_AARCH64) {
+		s->props |= FFA_PART_PROP_AARCH64_STATE;
+	} else {
+		EMSG("Invalid execution-state value: %"PRIu32, exec_state);
+		return TEE_ERROR_BAD_PARAMETERS;
+	}
+
+	return TEE_SUCCESS;
+}
+
+static TEE_Result read_sp_msg_types(const void *fdt, struct sp_session *s)
+{
+	TEE_Result res = TEE_ERROR_BAD_PARAMETERS;
+	uint32_t msg_method = 0;
+
+	res = sp_dt_get_u32(fdt, 0, "messaging-method", &msg_method);
+	if (res) {
+		EMSG("Mandatory property is missing: messaging-method");
+		return res;
+	}
+
+	if (msg_method & SP_MANIFEST_DIRECT_REQ_RECEIVE)
+		s->props |= FFA_PART_PROP_DIRECT_REQ_RECV;
+
+	if (msg_method & SP_MANIFEST_DIRECT_REQ_SEND)
+		s->props |= FFA_PART_PROP_DIRECT_REQ_SEND;
+
+	if (msg_method & SP_MANIFEST_INDIRECT_REQ)
+		IMSG("Indirect messaging is not supported");
+
+	return TEE_SUCCESS;
+}
+
+static TEE_Result read_vm_availability_msg(const void *fdt,
+					   struct sp_session *s)
+{
+	TEE_Result res = TEE_ERROR_BAD_PARAMETERS;
+	uint32_t v = 0;
+
+	res = sp_dt_get_u32(fdt, 0, "vm-availability-messages", &v);
+
+	/* This field in the manifest is optional */
+	if (res == TEE_ERROR_ITEM_NOT_FOUND)
+		return TEE_SUCCESS;
+
+	if (res)
+		return res;
+
+	if (v & ~(SP_MANIFEST_VM_CREATED_MSG | SP_MANIFEST_VM_DESTROYED_MSG)) {
+		EMSG("Invalid vm-availability-messages value: %"PRIu32, v);
+		return TEE_ERROR_BAD_PARAMETERS;
+	}
+
+	if (v & SP_MANIFEST_VM_CREATED_MSG)
+		s->props |= FFA_PART_PROP_NOTIF_CREATED;
+
+	if (v & SP_MANIFEST_VM_DESTROYED_MSG)
+		s->props |= FFA_PART_PROP_NOTIF_DESTROYED;
+
+	return TEE_SUCCESS;
+}
+
+static TEE_Result get_boot_order(const void *fdt, uint32_t *boot_order)
+{
+	TEE_Result res = TEE_SUCCESS;
+
+	res = sp_dt_get_u32(fdt, 0, "boot-order", boot_order);
+
+	if (res == TEE_SUCCESS) {
+		if (*boot_order > UINT16_MAX) {
+			EMSG("Value of boot-order property (%"PRIu32") is out of range",
+			     *boot_order);
+			res = TEE_ERROR_BAD_FORMAT;
+		}
+	} else if (res == TEE_ERROR_BAD_FORMAT) {
+		uint16_t boot_order_u16 = 0;
+
+		res = sp_dt_get_u16(fdt, 0, "boot-order", &boot_order_u16);
+		if (res == TEE_SUCCESS)
+			*boot_order = boot_order_u16;
+	}
+
+	if (res == TEE_ERROR_ITEM_NOT_FOUND)
+		*boot_order = UNDEFINED_BOOT_ORDER_VALUE;
+	else if (res != TEE_SUCCESS)
+		EMSG("Failed reading boot-order property err: %#"PRIx32, res);
+
+	return res;
+}
+
 static TEE_Result sp_init_uuid(const TEE_UUID *bin_uuid, const void * const fdt)
 {
 	TEE_Result res = TEE_SUCCESS;
 	struct sp_session *sess = NULL;
 	TEE_UUID ffa_uuid = {};
+	uint32_t boot_order = 0;
 
 	res = fdt_get_uuid(fdt, &ffa_uuid);
 	if (res)
 		return res;
 
+	res = get_boot_order(fdt, &boot_order);
+	if (res)
+		return res;
+
 	res = sp_open_session(&sess,
 			      &open_sp_sessions,
-			      &ffa_uuid, bin_uuid, fdt);
+			      &ffa_uuid, bin_uuid, boot_order, fdt);
 	if (res)
 		return res;
 
 	sess->fdt = fdt;
+
 	res = read_manifest_endpoint_id(sess);
 	if (res)
 		return res;
@@ -1360,13 +1632,29 @@ static TEE_Result sp_init_uuid(const TEE_UUID *bin_uuid, const void * const fdt)
 	if (res)
 		return res;
 
+	res = read_ffa_version(fdt, sess);
+	if (res)
+		return res;
+
+	res = read_sp_exec_state(fdt, sess);
+	if (res)
+		return res;
+
+	res = read_sp_msg_types(fdt, sess);
+	if (res)
+		return res;
+
+	res = read_vm_availability_msg(fdt, sess);
+	if (res)
+		return res;
+
 	return TEE_SUCCESS;
 }
 
 static TEE_Result sp_first_run(struct sp_session *sess)
 {
 	TEE_Result res = TEE_SUCCESS;
-	struct thread_smc_args args = { };
+	struct thread_smc_1_2_regs args = { };
 	struct sp_ctx *ctx = NULL;
 	vaddr_t boot_info_va = 0;
 	size_t boot_info_size = 0;
@@ -1410,7 +1698,7 @@ static TEE_Result sp_first_run(struct sp_session *sess)
 		goto out;
 
 	res = create_and_map_boot_info(ctx, fdt_copy, &args, &boot_info_va,
-				       &boot_info_size);
+				       &boot_info_size, sess->rxtx.ffa_vers);
 	if (res)
 		goto out;
 
@@ -1436,7 +1724,7 @@ out:
 	return res;
 }
 
-TEE_Result sp_enter(struct thread_smc_args *args, struct sp_session *sp)
+TEE_Result sp_enter(struct thread_smc_1_2_regs *args, struct sp_session *sp)
 {
 	TEE_Result res = TEE_SUCCESS;
 	struct sp_ctx *ctx = to_sp_ctx(sp->ts_sess.ctx);
@@ -1449,6 +1737,10 @@ TEE_Result sp_enter(struct thread_smc_args *args, struct sp_session *sp)
 	ctx->sp_regs.x[5] = args->a5;
 	ctx->sp_regs.x[6] = args->a6;
 	ctx->sp_regs.x[7] = args->a7;
+#ifdef CFG_TA_PAUTH
+	ctx->sp_regs.apiakey_hi = ctx->uctx.keys.apia_hi;
+	ctx->sp_regs.apiakey_lo = ctx->uctx.keys.apia_lo;
+#endif
 
 	res = sp->ts_sess.ctx->ops->enter_invoke_cmd(&sp->ts_sess, 0);
 
@@ -1502,13 +1794,10 @@ static TEE_Result sp_enter_invoke_cmd(struct ts_session *s,
 	struct sp_session *sp_s = to_sp_session(s);
 	struct ts_session *sess = NULL;
 	struct thread_ctx_regs *sp_regs = NULL;
-	uint32_t thread_id = THREAD_ID_INVALID;
 	struct ts_session *caller = NULL;
 	uint32_t rpc_target_info = 0;
 	uint32_t panicked = false;
 	uint32_t panic_code = 0;
-
-	bm_timestamp();
 
 	sp_regs = &ctx->sp_regs;
 	ts_push_current_session(s);
@@ -1524,12 +1813,13 @@ static TEE_Result sp_enter_invoke_cmd(struct ts_session *s,
 	 * as w1 in FFA_INTERRUPT in case of a foreign interrupt.
 	 */
 	rpc_target_info = thread_get_tsd()->rpc_target_info;
-	thread_id = thread_get_id();
-	assert(thread_id <= UINT16_MAX);
+	sp_s->thread_id = thread_get_id();
 	thread_get_tsd()->rpc_target_info =
-		FFA_TARGET_INFO_SET(sp_s->endpoint_id, thread_id);
+		FFA_TARGET_INFO_SET(sp_s->endpoint_id, sp_s->thread_id);
 
 	__thread_enter_user_mode(sp_regs, &panicked, &panic_code);
+
+	sp_s->thread_id = THREAD_ID_INVALID;
 
 	/* Restore rpc_target_info */
 	thread_get_tsd()->rpc_target_info = rpc_target_info;
@@ -1552,8 +1842,6 @@ static TEE_Result sp_enter_invoke_cmd(struct ts_session *s,
 
 	sess = ts_pop_current_session();
 	assert(sess == s);
-
-	bm_timestamp();
 
 	return res;
 }
@@ -1619,7 +1907,7 @@ static const struct ts_ops sp_ops = {
 
 static TEE_Result process_sp_pkg(uint64_t sp_pkg_pa, TEE_UUID *sp_uuid)
 {
-	enum teecore_memtypes mtype = MEM_AREA_TA_RAM;
+	enum teecore_memtypes mtype = MEM_AREA_SEC_RAM_OVERALL;
 	struct sp_pkg_header *sp_pkg_hdr = NULL;
 	struct fip_sp *sp = NULL;
 	uint64_t sp_fdt_end = 0;
@@ -1692,7 +1980,7 @@ static TEE_Result fip_sp_init_all(void)
 	int subnode = 0;
 	int root = 0;
 
-	fdt = get_tos_fw_config_dt();
+	fdt = get_manifest_dt();
 	if (!fdt) {
 		EMSG("No SPMC manifest found");
 		return TEE_ERROR_GENERIC;
@@ -1750,6 +2038,7 @@ static TEE_Result sp_init_all(void)
 	const struct fip_sp *fip_sp = NULL;
 	char __maybe_unused msg[60] = { '\0', };
 	struct sp_session *s = NULL;
+	struct sp_session *prev_sp = NULL;
 
 	for_each_secure_partition(sp) {
 		if (sp->image.uncompressed_size)
@@ -1797,8 +2086,27 @@ static TEE_Result sp_init_all(void)
 	 */
 	fip_sp_deinit_all();
 
+	/*
+	 * Now that all SPs are loaded, check through the boot order values,
+	 * and warn in case there is a non-unique value.
+	 */
+	TAILQ_FOREACH(s, &open_sp_sessions, link) {
+		/* Avoid warnings if multiple SP have undefined boot-order. */
+		if (s->boot_order == UNDEFINED_BOOT_ORDER_VALUE)
+			break;
+
+		if (prev_sp && prev_sp->boot_order == s->boot_order)
+			IMSG("WARNING: duplicated boot-order (%pUl vs %pUl)",
+			     &prev_sp->ts_sess.ctx->uuid,
+			     &s->ts_sess.ctx->uuid);
+
+		prev_sp = s;
+	}
+
 	/* Continue the initialization and run the SP */
 	TAILQ_FOREACH(s, &open_sp_sessions, link) {
+		DMSG("Starting SP: 0x%"PRIx16, s->endpoint_id);
+
 		res = sp_first_run(s);
 		if (res != TEE_SUCCESS) {
 			EMSG("Failed starting SP(0x%"PRIx16") err:%#"PRIx32,

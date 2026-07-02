@@ -3,8 +3,8 @@
  * Copyright (c) 2015, Linaro Limited
  * Copyright (c) 2019-2023, Arm Limited. All rights reserved.
  */
-#ifndef ARM_H
-#define ARM_H
+#ifndef __ARM_H
+#define __ARM_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -56,13 +56,15 @@
 
 /* MPIDR definitions */
 #define MPIDR_AFFINITY_BITS	U(8)
-#define MPIDR_AFFLVL_MASK	U(0xff)
+#define MPIDR_AFFLVL_MASK	ULL(0xff)
 #define MPIDR_AFF0_SHIFT	U(0)
 #define MPIDR_AFF0_MASK		(MPIDR_AFFLVL_MASK << MPIDR_AFF0_SHIFT)
 #define MPIDR_AFF1_SHIFT	U(8)
 #define MPIDR_AFF1_MASK		(MPIDR_AFFLVL_MASK << MPIDR_AFF1_SHIFT)
 #define MPIDR_AFF2_SHIFT	U(16)
 #define MPIDR_AFF2_MASK		(MPIDR_AFFLVL_MASK << MPIDR_AFF2_SHIFT)
+#define MPIDR_AFF3_SHIFT	U(32)
+#define MPIDR_AFF3_MASK		(MPIDR_AFFLVL_MASK << MPIDR_AFF3_SHIFT)
 
 #define MPIDR_MT_SHIFT		U(24)
 #define MPIDR_MT_MASK		BIT(MPIDR_MT_SHIFT)
@@ -73,6 +75,15 @@
 
 #define MPIDR_AARCH32_AFF_MASK	(MPIDR_AFF0_MASK | MPIDR_AFF1_MASK | \
 				 MPIDR_AFF2_MASK)
+
+/* MPIDR definitions for VCPU */
+#define MPIDR_VCPU_MASK		ULL(0xffffff)
+
+/* ID_ISAR5 Cryptography Extension masks */
+#define ID_ISAR5_AES		GENMASK_32(7, 4)
+#define ID_ISAR5_SHA1		GENMASK_32(11, 8)
+#define ID_ISAR5_SHA2		GENMASK_32(15, 12)
+#define ID_ISAR5_CRC32		GENMASK_32(19, 16)
 
 /* CLIDR definitions */
 #define CLIDR_LOUIS_SHIFT	U(21)
@@ -173,10 +184,73 @@ static inline unsigned int feat_pan_implemented(void)
 static inline bool feat_crc32_implemented(void)
 {
 #ifdef ARM32
+	return read_id_isar5() & ID_ISAR5_CRC32;
+#else
+	return read_id_aa64isar0_el1() & ID_AA64ISAR0_CRC32;
+#endif
+}
+
+static inline bool feat_aes_implemented(void)
+{
+#ifdef ARM32
+	return read_id_isar5() & ID_ISAR5_AES;
+#else
+	return read_id_aa64isar0_el1() & ID_AA64ISAR0_AES;
+#endif
+}
+
+static inline bool feat_sha1_implemented(void)
+{
+#ifdef ARM32
+	return read_id_isar5() & ID_ISAR5_SHA1;
+#else
+	return read_id_aa64isar0_el1() & ID_AA64ISAR0_SHA1;
+#endif
+}
+
+static inline bool feat_sha256_implemented(void)
+{
+#ifdef ARM32
+	return read_id_isar5() & ID_ISAR5_SHA2;
+#else
+	return read_id_aa64isar0_el1() & ID_AA64ISAR0_SHA2;
+#endif
+}
+
+static inline bool feat_sha512_implemented(void)
+{
+#ifdef ARM32
 	return false;
 #else
-	return ((read_id_aa64isar0_el1() >> ID_AA64ISAR0_EL1_CRC32_SHIFT) &
-		ID_AA64ISAR0_EL1_CRC32_MASK) == FEAT_CRC32_IMPLEMENTED;
+	return ((read_id_aa64isar0_el1() & ID_AA64ISAR0_SHA2) >>
+		ID_AA64ISAR0_SHA2_SHIFT) == ID_AA64ISAR0_SHA2_FEAT_SHA512;
+#endif
+}
+
+static inline bool feat_sha3_implemented(void)
+{
+#ifdef ARM32
+	return false;
+#else
+	return read_id_aa64isar0_el1() & ID_AA64ISAR0_SHA3;
+#endif
+}
+
+static inline bool feat_sm3_implemented(void)
+{
+#ifdef ARM32
+	return false;
+#else
+	return read_id_aa64isar0_el1() & ID_AA64ISAR0_SM3;
+#endif
+}
+
+static inline bool feat_sm4_implemented(void)
+{
+#ifdef ARM32
+	return false;
+#else
+	return read_id_aa64isar0_el1() & ID_AA64ISAR0_SM4;
 #endif
 }
 
@@ -190,12 +264,16 @@ static inline bool feat_pauth_is_implemented(void)
 		SHIFT_U64(ID_AA64ISAR1_GPA_MASK, ID_AA64ISAR1_GPA_SHIFT) |
 		SHIFT_U64(ID_AA64ISAR1_API_MASK, ID_AA64ISAR1_API_SHIFT) |
 		SHIFT_U64(ID_AA64ISAR1_APA_MASK, ID_AA64ISAR1_APA_SHIFT);
+	uint64_t mask2 =
+		SHIFT_U64(ID_AA64ISAR2_GPA3_MASK, ID_AA64ISAR2_GPA3_SHIFT) |
+		SHIFT_U64(ID_AA64ISAR2_APA3_MASK, ID_AA64ISAR2_APA3_SHIFT);
 
 	/* If any of the fields is not zero, PAuth is implemented by arch */
-	return (read_id_aa64isar1_el1() & mask) != 0U;
+	return (read_id_aa64isar1_el1() & mask) != 0U ||
+	       (read_id_aa64isar2_el1() & mask2) != 0U;
 #endif
 }
 
 #endif
 
-#endif /*ARM_H*/
+#endif /*__ARM_H*/

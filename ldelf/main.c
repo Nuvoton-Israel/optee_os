@@ -5,6 +5,7 @@
  */
 
 #include <assert.h>
+#include <config.h>
 #include <ldelf.h>
 #include <malloc.h>
 #include <printk.h>
@@ -15,6 +16,7 @@
 #include <types_ext.h>
 #include <util.h>
 
+#include "asan.h"
 #include "dl.h"
 #include "ftrace.h"
 #include "sys.h"
@@ -103,9 +105,18 @@ static void __noreturn ftrace_dump(void *buf, size_t *blen)
 {
 	struct print_buf_ctx pbuf = { .buf = buf, .blen = *blen };
 
-	ta_elf_print_mappings(&pbuf, print_to_pbuf, &main_elf_queue,
-			      0, NULL, mpool_base);
+	/* only print the header when this is a new dump */
+	if (!ftrace_get_dump_id())
+		ta_elf_print_mappings(&pbuf, print_to_pbuf, &main_elf_queue,
+				      0, NULL, mpool_base);
 	ftrace_copy_buf(&pbuf, copy_to_pbuf);
+	/*
+	 * Reset the buffer after dump if this is the actual write
+	 * The OS may call this function with buf == NULL,
+	 * in order to get the length required to write ftrace data.
+	 */
+	if (buf)
+		ftrace_reset_buf();
 	*blen = pbuf.ret;
 	sys_return_cleanup();
 }
@@ -133,11 +144,17 @@ static void __noreturn dl_entry(struct dl_entry_arg *arg)
  *
  * Only called from assembly
  */
-void __noreturn ldelf(struct ldelf_arg *arg);
+void __noreturn __no_asan ldelf(struct ldelf_arg *arg);
 void ldelf(struct ldelf_arg *arg)
 {
 	TEE_Result res = TEE_SUCCESS;
 	struct ta_elf *elf = NULL;
+
+	res = asan_init_ldelf();
+	if (res) {
+		EMSG("asan init result %"PRIx32, res);
+		panic();
+	}
 
 	DMSG("Loading TS %pUl", (void *)&arg->uuid);
 	res = sys_map_zi(mpool_size, 0, &mpool_base, 0, 0);
@@ -146,6 +163,8 @@ void ldelf(struct ldelf_arg *arg)
 		panic();
 	}
 	malloc_add_pool((void *)mpool_base, mpool_size);
+
+	asan_start();
 
 	/* Load the main binary and get a list of dependencies, if any. */
 	ta_elf_load_main(&arg->uuid, &arg->is_32bit, &arg->stack_ptr,
@@ -172,9 +191,22 @@ void ldelf(struct ldelf_arg *arg)
 		arg->ftrace_entry = (vaddr_t)(void *)ftrace_dump;
 #endif
 
-	TAILQ_FOREACH(elf, &main_elf_queue, link)
+	TAILQ_FOREACH(elf, &main_elf_queue, link) {
+		if (IS_ENABLED(CFG_TA_SANITIZE_KADDRESS)) {
+			TEE_Result rc = TEE_ERROR_GENERIC;
+
+			rc = asan_user_map_shadow((void *)elf->load_addr,
+						  (void *)elf->max_addr,
+						  ASAN_REG_ELF);
+			if (rc) {
+				EMSG("Failed to map shadow for ELF (%pUl)",
+				     (void *)&elf->uuid);
+				panic();
+			}
+		}
 		DMSG("ELF (%pUl) at %#"PRIxVA,
 		     (void *)&elf->uuid, elf->load_addr);
+	}
 
 #if TRACE_LEVEL >= TRACE_ERROR
 	arg->dump_entry = (vaddr_t)(void *)dump_ta_state;

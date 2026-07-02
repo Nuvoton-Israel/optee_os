@@ -7,28 +7,22 @@
 
 #include <assert.h>
 #include <crypto/crypto.h>
-#include <kernel/handle.h>
 #include <kernel/huk_subkey.h>
 #include <kernel/ldelf_loader.h>
-#include <kernel/misc.h>
 #include <kernel/msg_param.h>
 #include <kernel/pseudo_ta.h>
 #include <kernel/tpm.h>
-#include <kernel/ts_store.h>
 #include <kernel/user_access.h>
 #include <kernel/user_mode_ctx.h>
-#include <ldelf.h>
 #include <mm/file.h>
 #include <mm/fobj.h>
 #include <mm/vm.h>
 #include <pta_system.h>
-#include <stdlib_ext.h>
 #include <stdlib.h>
 #include <string.h>
 #include <tee_api_defines_extensions.h>
 #include <tee_api_defines.h>
 #include <tee/tee_supp_plugin_rpc.h>
-#include <tee/uuid.h>
 #include <util.h>
 
 static unsigned int system_pnum;
@@ -107,7 +101,7 @@ static TEE_Result system_derive_ta_unique_key(struct user_mode_ctx *uctx,
 	if (ADD_OVERFLOW(data_len, params[0].memref.size, &data_len))
 		return TEE_ERROR_SECURITY;
 
-	data = calloc(data_len, 1);
+	data = bb_alloc(data_len);
 	if (!data)
 		return TEE_ERROR_OUT_OF_MEMORY;
 
@@ -134,8 +128,8 @@ static TEE_Result system_derive_ta_unique_key(struct user_mode_ctx *uctx,
 			   params[1].memref.size);
 
 out:
-	bb_free(subkey_bbuf, params[1].memref.size);
-	free_wipe(data);
+	bb_free_wipe(subkey_bbuf, params[1].memref.size);
+	bb_free_wipe(data, data_len);
 	return res;
 }
 
@@ -166,6 +160,9 @@ static TEE_Result system_map_zi(struct user_mode_ctx *uctx,
 		vm_flags |= VM_FLAG_SHAREABLE;
 
 	num_bytes = params[0].value.a;
+	if (!num_bytes)
+		return TEE_ERROR_BAD_PARAMETERS;
+
 	va = reg_pair_to_64(params[1].value.a, params[1].value.b);
 	pad_begin = params[2].value.a;
 	pad_end = params[2].value.b;

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * Copyright (c) 2022, Arm Limited
+ * Copyright (c) 2022, 2025-2026 Arm Limited
  */
 
 #ifndef PLATFORM_CONFIG_H
@@ -20,14 +20,20 @@
 #define DRAM0_BASE		0x80000000
 #define DRAM0_SIZE		CFG_DDR_SIZE
 
+#ifdef _CFG_ARM_V3_OR_V4
+#define GICD_OFFSET		0x00000
+#define GICR_OFFSET		0x40000
+#else
 #define GICD_OFFSET		0x10000
 #define GICC_OFFSET		0x2F000
+#endif
 
-#define GICD_BASE		(GIC_BASE + GICD_OFFSET)
+#ifdef _CFG_ARM_V3_OR_V4
+#define GICR_BASE		(GIC_BASE + GICR_OFFSET)
+#else
 #define GICC_BASE		(GIC_BASE + GICC_OFFSET)
-
-#define MM_COMM_BUF_BASE	0x02000000
-#define MM_COMM_BUF_SIZE	0x1000
+#endif
+#define GICD_BASE		(GIC_BASE + GICD_OFFSET)
 
 #define UART_BAUDRATE		115200
 #define CONSOLE_BAUDRATE	UART_BAUDRATE

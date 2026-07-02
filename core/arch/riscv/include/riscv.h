@@ -3,14 +3,18 @@
  * Copyright 2022-2023 NXP
  */
 
-#ifndef RISCV_H
-#define RISCV_H
+#ifndef __RISCV_H
+#define __RISCV_H
 
 #include <compiler.h>
 #include <encoding.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/cdefs.h>
 #include <util.h>
+
+/* The stack pointer is always kept 16-byte aligned */
+#define STACK_ALIGNMENT		16
 
 #define RISCV_XLEN_BITS		(__riscv_xlen)
 #define RISCV_XLEN_BYTES	(__riscv_xlen / 8)
@@ -53,6 +57,9 @@
 #define CSR_XCAUSE		(CSR_MODE_BITS | 0x042)
 #define CSR_XTVAL		(CSR_MODE_BITS | 0x043)
 #define CSR_XIP			(CSR_MODE_BITS | 0x044)
+#define CSR_XISELECT		(CSR_MODE_BITS | 0x050)
+#define CSR_XIREG		(CSR_MODE_BITS | 0x051)
+#define CSR_XTOPEI		(CSR_MODE_BITS | 0x05C)
 
 #define IRQ_XSOFT		(CSR_MODE_OFFSET + 0)
 #define IRQ_XTIMER		(CSR_MODE_OFFSET + 4)
@@ -67,6 +74,8 @@
 #define CSR_XSTATUS_SPP		BIT(8)
 #define CSR_XSTATUS_SUM		BIT(18)
 #define CSR_XSTATUS_MXR		BIT(19)
+
+#define CSR_XCAUSE_INTR_FLAG	BIT64(__riscv_xlen - 1)
 
 #ifndef __ASSEMBLER__
 
@@ -90,20 +99,30 @@
 		__tmp;							\
 	})
 
-#define set_csr(csr, bit)						\
+#define read_set_csr(csr, val)						\
 	({								\
 		unsigned long __tmp;					\
 		asm volatile ("csrrs %0, %1, %2"			\
-			      : "=r"(__tmp) : "i"(csr), "rK"(bit));	\
+			      : "=r"(__tmp) : "i"(csr), "rK"(val));	\
 		__tmp;							\
 	})
 
-#define clear_csr(csr, bit)						\
+#define set_csr(csr, val)						\
+	({								\
+		asm volatile ("csrs %0, %1" : : "i"(csr), "rK"(val));	\
+	})
+
+#define read_clear_csr(csr, val)					\
 	({								\
 		unsigned long __tmp;					\
 		asm volatile ("csrrc %0, %1, %2"			\
-			      : "=r"(__tmp) : "i"(csr), "rK"(bit));	\
+			      : "=r"(__tmp) : "i"(csr), "rK"(val));	\
 		__tmp;							\
+	})
+
+#define clear_csr(csr, val)						\
+	({								\
+		asm volatile ("csrc %0, %1" : : "i"(csr), "rK"(val));	\
 	})
 
 #define rdtime() read_csr(CSR_TIME)
@@ -115,9 +134,17 @@ static inline __noprof void mb(void)
 	asm volatile ("fence" : : : "memory");
 }
 
+static inline __noprof unsigned long read_gp(void)
+{
+	unsigned long gp = 0;
+
+	asm volatile("mv %0, gp" : "=&r"(gp));
+	return gp;
+}
+
 static inline __noprof unsigned long read_tp(void)
 {
-	unsigned long tp;
+	unsigned long tp = 0;
 
 	asm volatile("mv %0, tp" : "=&r"(tp));
 	return tp;
@@ -144,6 +171,29 @@ static inline __noprof unsigned long read_pc(void)
 static inline __noprof void wfi(void)
 {
 	asm volatile ("wfi");
+}
+
+static inline __noprof void riscv_cpu_pause(void)
+{
+	unsigned long dummy = 0;
+
+	/*
+	 * Use a divide instruction to force wait
+	 * for multiple CPU cycles.
+	 * Note: RISC-V does not raise an exception
+	 * on divide by zero.
+	 */
+	asm volatile ("div %0, %0, zero" : "=r" (dummy));
+
+	/*
+	 * Use the encoding of the 'pause' instruction,
+	 * thus no need to verify toolchain support for
+	 * zihintpause.
+	 * On hardware platforms that do not implement
+	 * this extension, it will simply serve as a no-op.
+	 */
+	asm volatile (".4byte 0x100000f"); /* pause */
+	barrier();
 }
 
 static inline __noprof void flush_tlb(void)
@@ -387,6 +437,8 @@ static inline __noprof uint32_t read_cntfrq(void)
 	return CFG_RISCV_MTIME_RATE;
 }
 
+__noprof bool riscv_detect_csr_seed(void);
+
 #endif /*__ASSEMBLER__*/
 
-#endif /*RISCV_H*/
+#endif /*__RISCV_H*/

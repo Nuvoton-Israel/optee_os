@@ -79,6 +79,16 @@ void *bb_alloc(size_t len);
 void bb_free(void *bb, size_t len);
 
 /*
+ * bb_free_wipe() - Wipe and free a bounce buffer
+ * @bb:		Buffer
+ * @len:	Length of buffer
+ *
+ * The bounce buffer is always wiped if @bb is non-NULL, but only freed if
+ * it is last on the stack of allocated bounce buffers.
+ */
+void bb_free_wipe(void *bb, size_t len);
+
+/*
  * bb_reset() - Reset bounce buffer allocation
  *
  * Resets the bounce buffer allocatation state, old pointers allocated
@@ -89,6 +99,16 @@ void bb_reset(void);
 TEE_Result clear_user(void *uaddr, size_t n);
 
 size_t strnlen_user(const void *s, size_t n);
+
+#define __BB_MEMDUP(memdup_func, src, len, p) ({			\
+	TEE_Result __res = TEE_SUCCESS;					\
+	void *__p = NULL;						\
+									\
+	__res = memdup_func((src), (len), &__p);			\
+	if (!__res)							\
+		*(p) = __p;						\
+	__res;								\
+})
 
 /*
  * bb_memdup_user() - Duplicate a user-space buffer into a bounce buffer
@@ -101,6 +121,8 @@ size_t strnlen_user(const void *s, size_t n);
  * Return TEE_ERROR_OUT_OF_MEMORY or TEE_ERROR_ACCESS_DENIED on error.
  */
 TEE_Result bb_memdup_user(const void *src, size_t len, void **p);
+#define BB_MEMDUP_USER(src, len, p) \
+	__BB_MEMDUP(bb_memdup_user, (src), (len), (p))
 
 /*
  * bb_memdup_user_private() - Duplicate a private user-space buffer
@@ -114,6 +136,8 @@ TEE_Result bb_memdup_user(const void *src, size_t len, void **p);
  * Return TEE_ERROR_OUT_OF_MEMORY or TEE_ERROR_ACCESS_DENIED on error.
  */
 TEE_Result bb_memdup_user_private(const void *src, size_t len, void **p);
+#define BB_MEMDUP_USER_PRIVATE(src, len, p) \
+	__BB_MEMDUP(bb_memdup_user_private, (src), (len), (p))
 
 /*
  * bb_strndup_user() - Duplicate a user-space string into a bounce buffer

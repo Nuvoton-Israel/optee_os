@@ -88,7 +88,7 @@ static void tzpc_init(void);
 
 static struct serial8250_uart_data console_data;
 
-void console_init(void)
+void plat_console_init(void)
 {
 	serial8250_uart_init(&console_data,
 			     CONSOLE_UART_BASE,
@@ -130,7 +130,7 @@ void boot_primary_init_intc(void)
 
 void boot_secondary_init_intc(void)
 {
-	gic_cpu_init();
+	gic_init_per_cpu();
 }
 #endif
 

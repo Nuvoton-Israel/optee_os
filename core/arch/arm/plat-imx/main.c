@@ -33,7 +33,6 @@
 #include <drivers/gic.h>
 #include <drivers/imx_uart.h>
 #include <imx.h>
-#include <io.h>
 #include <kernel/boot.h>
 #include <mm/core_memprot.h>
 #include <mm/core_mmu.h>
@@ -91,14 +90,14 @@ register_phys_mem_pgdir(MEM_AREA_IO_SEC,
 			CORE_MMU_PGDIR_SIZE);
 #endif
 
-#ifdef CFG_DRAM_BASE
+#if defined(CFG_DRAM_BASE) && defined(CFG_DDR_SIZE)
 register_ddr(CFG_DRAM_BASE, CFG_DDR_SIZE);
 #endif
-#ifdef CFG_NSEC_DDR_1_BASE
+#if defined(CFG_NSEC_DDR_1_BASE) && defined(CFG_NSEC_DDR_1_SIZE)
 register_ddr(CFG_NSEC_DDR_1_BASE, CFG_NSEC_DDR_1_SIZE);
 #endif
 
-void console_init(void)
+void plat_console_init(void)
 {
 #ifdef CONSOLE_UART_BASE
 	imx_uart_init(&console_data, CONSOLE_UART_BASE);
@@ -115,9 +114,17 @@ void boot_primary_init_intc(void)
 #endif
 }
 
+#if !defined(CFG_CORE_HAS_GENERIC_TIMER)
+unsigned long plat_get_freq(void)
+{
+	/* Standard i.MX6 boot frequency set by ROM code */
+	return 792000000;
+}
+#endif
+
 #if CFG_TEE_CORE_NB_CORE > 1
 void boot_secondary_init_intc(void)
 {
-	gic_cpu_init();
+	gic_init_per_cpu();
 }
 #endif

@@ -7,10 +7,34 @@
 #include <compiler.h>
 #include <config.h>
 #include <drivers/hfic.h>
-#include <hafnium.h>
 #include <kernel/interrupt.h>
 #include <kernel/panic.h>
 #include <kernel/thread.h>
+
+/*
+ * For documentation of the paravirtualized interface see:
+ * https://hafnium.readthedocs.io/en/latest/design/secure-partition-manager.html#paravirtualized-interfaces
+ */
+
+#define HF_INTERRUPT_ENABLE		0xff03
+#define HF_INTERRUPT_GET		0xff04
+#define HF_INTERRUPT_DEACTIVATE		0xff08
+#define HF_INTERRUPT_RECONFIGURE	0xff09
+
+#define HF_INVALID_INTID		0xffffffff
+#define HF_MAILBOX_READABLE_INTID	1
+#define HF_MAILBOX_WRITABLE_INTID	2
+#define HF_VIRTUAL_TIMER_INTID		3
+#define HF_MANAGED_EXIT_INTID		4
+#define HF_NOTIFICATION_PENDING_INTID	5
+#define HF_IPI_INTID			9
+
+#define HF_INTERRUPT_TYPE_IRQ	0
+#define HF_INTERRUPT_TYPE_FIQ	1
+#define HF_ENABLE		1
+#define HF_DISABLE		0
+
+#define HF_INT_RECONFIGURE_STATUS 2
 
 struct hfic_data {
 	struct itr_chip chip;
@@ -18,55 +42,55 @@ struct hfic_data {
 
 static struct hfic_data hfic_data __nex_bss;
 
-static void hfic_op_add(struct itr_chip *chip __unused, size_t it __unused,
-			uint32_t type __unused, uint32_t prio __unused)
+static bool __maybe_unused hfic_static_it(size_t it)
 {
+	switch (it) {
+	case HF_MAILBOX_READABLE_INTID:
+	case HF_MAILBOX_WRITABLE_INTID:
+	case HF_VIRTUAL_TIMER_INTID:
+	case HF_MANAGED_EXIT_INTID:
+	case HF_NOTIFICATION_PENDING_INTID:
+	case HF_IPI_INTID:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static void hfic_op_configure(struct itr_chip *chip __unused, size_t it,
+			      uint32_t type __unused, uint32_t prio __unused)
+{
+	uint32_t res __maybe_unused = 0;
+
+	res = thread_hvc(HF_INTERRUPT_ENABLE, it, HF_ENABLE,
+			 HF_INTERRUPT_TYPE_IRQ);
+	assert(!res || hfic_static_it(it));
 }
 
 static void hfic_op_enable(struct itr_chip *chip __unused, size_t it)
 {
 	uint32_t res __maybe_unused = 0;
 
-	res = thread_hvc(HF_INTERRUPT_ENABLE, it, HF_ENABLE,
-			 HF_INTERRUPT_TYPE_IRQ);
-	assert(!res);
+	res = thread_hvc(HF_INTERRUPT_RECONFIGURE, it,
+			 HF_INT_RECONFIGURE_STATUS, HF_ENABLE);
+	assert(!res || hfic_static_it(it));
 }
 
 static void hfic_op_disable(struct itr_chip *chip __unused, size_t it)
 {
 	uint32_t res __maybe_unused = 0;
 
-	res = thread_hvc(HF_INTERRUPT_ENABLE, it, HF_DISABLE,
-			 HF_INTERRUPT_TYPE_IRQ);
-	assert(!res);
-}
-
-static void hfic_op_raise_pi(struct itr_chip *chip __unused, size_t it __unused)
-{
-	panic();
-}
-
-static void hfic_op_raise_sgi(struct itr_chip *chip __unused,
-			      size_t it __unused, uint8_t cpu_mask __unused)
-{
-	panic();
-}
-
-static void hfic_op_set_affinity(struct itr_chip *chip __unused,
-				 size_t it __unused, uint8_t cpu_mask __unused)
-{
-	panic();
+	res = thread_hvc(HF_INTERRUPT_RECONFIGURE, it,
+			 HF_INT_RECONFIGURE_STATUS, HF_DISABLE);
+	assert(!res || hfic_static_it(it));
 }
 
 static const struct itr_ops hfic_ops = {
-	.add = hfic_op_add,
+	.configure = hfic_op_configure,
 	.mask = hfic_op_disable,
 	.unmask = hfic_op_enable,
 	.enable = hfic_op_enable,
 	.disable = hfic_op_disable,
-	.raise_pi = hfic_op_raise_pi,
-	.raise_sgi = hfic_op_raise_sgi,
-	.set_affinity = hfic_op_set_affinity,
 };
 
 void hfic_init(void)
@@ -87,7 +111,8 @@ void interrupt_main_handler(void)
 		return;
 	}
 
-	itr_handle(id);
+	interrupt_call_handlers(&hfic_data.chip, id);
+
 	res = thread_hvc(HF_INTERRUPT_DEACTIVATE, id, id, 0);
 	assert(!res);
 }

@@ -8,6 +8,7 @@
 #include <drivers/clk.h>
 #include <drivers/clk_dt.h>
 #include <drivers/serial.h>
+#include <drivers/stm32_gpio.h>
 #include <drivers/stm32_uart.h>
 #include <io.h>
 #include <keep.h>
@@ -38,12 +39,12 @@
  * Bit 5 RXNE: Read data register not empty/RXFIFO not empty
  * Bit 6 TC: Transmission complete
  * Bit 7 TXE/TXFNF: Transmit data register empty/TXFIFO not full
- * Bit 27 TXFE: TXFIFO threshold reached
+ * Bit 23 TXFE: TXFIFO empty
  */
 #define USART_ISR_RXNE_RXFNE		BIT(5)
 #define USART_ISR_TC			BIT(6)
 #define USART_ISR_TXE_TXFNF		BIT(7)
-#define USART_ISR_TXFE			BIT(27)
+#define USART_ISR_TXFE			BIT(23)
 
 static vaddr_t loc_chip_to_base(struct serial_chip *chip)
 {
@@ -108,26 +109,6 @@ void stm32_uart_init(struct stm32_uart_pdata *pd, vaddr_t base)
 	pd->chip.ops = &stm32_uart_serial_ops;
 }
 
-static void register_secure_uart(struct stm32_uart_pdata *pd)
-{
-	size_t __maybe_unused n = 0;
-
-	stm32mp_register_secure_periph_iomem(pd->base.pa);
-	stm32mp_register_secure_pinctrl(pd->pinctrl);
-	if (pd->pinctrl_sleep)
-		stm32mp_register_secure_pinctrl(pd->pinctrl_sleep);
-}
-
-static void register_non_secure_uart(struct stm32_uart_pdata *pd)
-{
-	size_t __maybe_unused n = 0;
-
-	stm32mp_register_non_secure_periph_iomem(pd->base.pa);
-	stm32mp_register_non_secure_pinctrl(pd->pinctrl);
-	if (pd->pinctrl_sleep)
-		stm32mp_register_non_secure_pinctrl(pd->pinctrl_sleep);
-}
-
 struct stm32_uart_pdata *stm32_uart_init_from_dt_node(void *fdt, int node)
 {
 	TEE_Result res = TEE_ERROR_GENERIC;
@@ -148,7 +129,6 @@ struct stm32_uart_pdata *stm32_uart_init_from_dt_node(void *fdt, int node)
 
 	pd->chip.ops = &stm32_uart_serial_ops;
 	pd->base.pa = info.reg;
-	pd->secure = (info.status == DT_STATUS_OK_SEC);
 
 	res = clk_dt_get_by_index(fdt, node, 0, &pd->clock);
 	if (res) {
@@ -161,9 +141,8 @@ struct stm32_uart_pdata *stm32_uart_init_from_dt_node(void *fdt, int node)
 		panic();
 
 	assert(cpu_mmu_enabled());
-	pd->base.va = (vaddr_t)phys_to_virt(pd->base.pa,
-					    pd->secure ? MEM_AREA_IO_SEC :
-					    MEM_AREA_IO_NSEC, info.reg_size);
+	pd->base.va = (vaddr_t)phys_to_virt(pd->base.pa, MEM_AREA_IO_SEC,
+					    info.reg_size);
 
 	res = pinctrl_get_state_by_name(fdt, node, "default", &pd->pinctrl);
 	if (res)
@@ -176,11 +155,6 @@ struct stm32_uart_pdata *stm32_uart_init_from_dt_node(void *fdt, int node)
 	res = pinctrl_apply_state(pd->pinctrl);
 	if (res)
 		panic();
-
-	if (pd->secure)
-		register_secure_uart(pd);
-	else
-		register_non_secure_uart(pd);
 
 	return pd;
 }

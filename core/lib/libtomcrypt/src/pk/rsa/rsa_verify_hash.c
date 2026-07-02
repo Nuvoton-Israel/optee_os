@@ -146,7 +146,7 @@ int rsa_verify_hash_ex(const unsigned char *sig,            unsigned long  sigle
       LTC_SET_ASN1(siginfo,    0, LTC_ASN1_SEQUENCE,          digestinfo,                    2);
       LTC_SET_ASN1(siginfo,    1, LTC_ASN1_OCTET_STRING,      tmpbuf,                        siglen);
 
-      if ((err = der_decode_sequence_strict(out, outlen, siginfo, 2)) != CRYPT_OK) {
+      if (der_decode_sequence_strict(out, outlen, siginfo, 2) != CRYPT_OK) {
          /* fallback to Legacy:missing NULL */
          LTC_SET_ASN1(siginfo, 0, LTC_ASN1_SEQUENCE,          digestinfo,                    1);
          if ((err = der_decode_sequence_strict(out, outlen, siginfo, 2)) != CRYPT_OK) {
@@ -164,20 +164,33 @@ int rsa_verify_hash_ex(const unsigned char *sig,            unsigned long  sigle
       if ((reallen == outlen) &&
           (digestinfo[0].size == hash_descriptor[hash_idx]->OIDlen) &&
         (XMEMCMP(digestinfo[0].data, hash_descriptor[hash_idx]->OID, sizeof(unsigned long) * hash_descriptor[hash_idx]->OIDlen) == 0) &&
-          (siginfo[1].size == hashlen) &&
-        (ftmn_set_check_res_memcmp(&ftmn, FTMN_INCR1, XMEMCMP,
-				   siginfo[1].data, hash, hashlen) == 0)) {
-         *stat = 1;
+          (siginfo[1].size == hashlen)) {
+
+        if (ftmn_set_check_res_memcmp(&ftmn, FTMN_INCR1, XMEMCMP,
+            siginfo[1].data, hash, hashlen) == 0) {
+          *stat = 1;
+        }
+        inc1 = 1;
       }
-      inc1 = 1;
     } else {
       /* only check if the hash is equal */
-      if ((hashlen == outlen) &&
-          (ftmn_set_check_res_memcmp(&ftmn, FTMN_INCR1, XMEMCMP,
-				     out, hash, hashlen) == 0)) {
-        *stat = 1;
+      if (hashlen == outlen) {
+        if (ftmn_set_check_res_memcmp(&ftmn, FTMN_INCR1, XMEMCMP,
+				     out, hash, hashlen) == 0) {
+          *stat = 1;
+        }
+        inc1 = 1;
       }
-      inc1 = 1;
+    }
+
+    if (!*stat) {
+      /*
+       * The call to ftmn_set_check_res_memcmp() above might have failed,
+       * since memcmp() may set any non-zero result force it 1 to match the
+       * check with FTMN_CALLEE_DONE_CHECK() below.
+       */
+      FTMN_SET_CHECK_RES_NOT_ZERO(&ftmn, FTMN_INCR1, 1);
+      inc1++;
     }
 
 #ifdef LTC_CLEAN_STACK

@@ -5,11 +5,11 @@
  */
 
 #include <arm.h>
+#include <asan.h>
 #include <assert.h>
 #include <io.h>
 #include <keep.h>
 #include <kernel/abort.h>
-#include <kernel/asan.h>
 #include <kernel/cache_helpers.h>
 #include <kernel/linker.h>
 #include <kernel/panic.h>
@@ -931,7 +931,7 @@ static struct pgt **alloc_merged_pgt_array(struct vm_paged_region *a,
 	    a->pgt_array[a_pgt_count - 1] != a_next->pgt_array[0])
 		return NULL;
 
-	pgt_array = calloc(sizeof(struct pgt *), pgt_count);
+	pgt_array = calloc(pgt_count, sizeof(struct pgt *));
 	if (!pgt_array)
 		return NULL;
 
@@ -2004,7 +2004,7 @@ void *tee_pager_alloc(size_t size)
 	if (!size)
 		return NULL;
 
-	mm = tee_mm_alloc(&tee_mm_vcore, ROUNDUP(size, SMALL_PAGE_SIZE));
+	mm = tee_mm_alloc(&core_virt_mem_pool, ROUNDUP(size, SMALL_PAGE_SIZE));
 	if (!mm)
 		return NULL;
 
@@ -2031,7 +2031,8 @@ vaddr_t tee_pager_init_iv_region(struct fobj *fobj)
 
 	assert(!pager_iv_region);
 
-	mm = tee_mm_alloc(&tee_mm_vcore, fobj->num_pages * SMALL_PAGE_SIZE);
+	mm = tee_mm_alloc(&core_virt_mem_pool,
+			  fobj->num_pages * SMALL_PAGE_SIZE);
 	if (!mm)
 		panic();
 

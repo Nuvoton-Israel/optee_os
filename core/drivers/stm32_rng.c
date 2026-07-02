@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /*
- * Copyright (c) 2018-2023, STMicroelectronics
+ * Copyright (c) 2018-2024, STMicroelectronics
  */
 
 #include <assert.h>
@@ -26,19 +26,35 @@
 #define RNG_CR			U(0x00)
 #define RNG_SR			U(0x04)
 #define RNG_DR			U(0x08)
+#define RNG_NSCR		U(0x0C)
+#define RNG_HTCR		U(0x10)
+#define RNG_VERR		U(0x3F4)
 
 #define RNG_CR_RNGEN		BIT(2)
 #define RNG_CR_IE		BIT(3)
 #define RNG_CR_CED		BIT(5)
+#define RNG_CR_CONFIG1		GENMASK_32(11, 8)
+#define RNG_CR_NISTC		BIT(12)
+#define RNG_CR_POWER_OPTIM	BIT(13)
+#define RNG_CR_CONFIG2		GENMASK_32(15, 13)
 #define RNG_CR_CLKDIV		GENMASK_32(19, 16)
 #define RNG_CR_CLKDIV_SHIFT	U(16)
+#define RNG_CR_CONFIG3		GENMASK_32(25, 20)
 #define RNG_CR_CONDRST		BIT(30)
+#define RNG_CR_ENTROPY_SRC_MASK	(RNG_CR_CONFIG1 | RNG_CR_NISTC | \
+				 RNG_CR_CONFIG2 | RNG_CR_CONFIG3)
 
 #define RNG_SR_DRDY		BIT(0)
 #define RNG_SR_CECS		BIT(1)
 #define RNG_SR_SECS		BIT(2)
 #define RNG_SR_CEIS		BIT(5)
 #define RNG_SR_SEIS		BIT(6)
+
+#define RNG_NSCR_MASK		GENMASK_32(17, 0)
+
+#define RNG_VERR_MINOR_MASK	GENMASK_32(3, 0)
+#define RNG_VERR_MAJOR_MASK	GENMASK_32(7, 4)
+#define RNG_VERR_MAJOR_SHIFT	U(4)
 
 #if TRACE_LEVEL > TRACE_DEBUG
 #define RNG_READY_TIMEOUT_US	U(100000)
@@ -49,26 +65,35 @@
 
 #define RNG_FIFO_BYTE_DEPTH	U(16)
 
-#define RNG_NIST_CONFIG_A	U(0x0F00D00)
-#define RNG_NIST_CONFIG_B	U(0x1801000)
-#define RNG_NIST_CONFIG_MASK	GENMASK_32(25, 8)
-
-#define RNG_MAX_NOISE_CLK_FREQ	U(3000000)
+#define RNG_CONFIG_MASK		(RNG_CR_ENTROPY_SRC_MASK | RNG_CR_CED | \
+				 RNG_CR_CLKDIV)
 
 struct stm32_rng_driver_data {
+	unsigned long max_noise_clk_freq;
+	unsigned long nb_clock;
+	uint32_t cr;
+	uint32_t nscr;
+	uint32_t htcr;
+	bool has_power_optim;
 	bool has_cond_reset;
 };
 
 struct stm32_rng_instance {
 	struct io_pa_va base;
 	struct clk *clock;
+	struct clk *bus_clock;
 	struct rstctrl *rstctrl;
 	const struct stm32_rng_driver_data *ddata;
 	unsigned int lock;
-	bool release_post_boot;
+	uint64_t error_to_ref;
+	uint32_t pm_cr;
+	uint32_t pm_health;
+	uint32_t pm_noise_ctrl;
+	uint32_t health_test_conf;
+	uint32_t noise_ctrl_conf;
+	uint32_t rng_config;
 	bool clock_error;
 	bool error_conceal;
-	uint64_t error_to_ref;
 };
 
 /* Expect at most a single RNG instance */
@@ -249,7 +274,7 @@ static uint32_t stm32_rng_clock_freq_restrain(void)
 	 * No need to handle the case when clock-div > 0xF as it is physically
 	 * impossible
 	 */
-	while ((clock_rate >> clock_div) > RNG_MAX_NOISE_CLK_FREQ)
+	while ((clock_rate >> clock_div) > dev->ddata->max_noise_clk_freq)
 		clock_div++;
 
 	DMSG("RNG clk rate : %lu", clk_get_rate(dev->clock) >> clock_div);
@@ -257,11 +282,48 @@ static uint32_t stm32_rng_clock_freq_restrain(void)
 	return clock_div;
 }
 
-static TEE_Result init_rng(void)
+static TEE_Result enable_rng_clock(void)
 {
+	TEE_Result res = clk_enable(stm32_rng->clock);
+
+	if (!res && stm32_rng->bus_clock) {
+		res = clk_enable(stm32_rng->bus_clock);
+		if (res)
+			clk_disable(stm32_rng->clock);
+	}
+
+	return res;
+}
+
+static void disable_rng_clock(void)
+{
+	clk_disable(stm32_rng->clock);
+	if (stm32_rng->bus_clock)
+		clk_disable(stm32_rng->bus_clock);
+}
+
+static TEE_Result stm32_rng_init(void)
+{
+	TEE_Result res = TEE_ERROR_GENERIC;
 	vaddr_t rng_base = get_base();
-	uint64_t timeout_ref = 0;
 	uint32_t cr_ced_mask = 0;
+	uint32_t value = 0;
+
+	res = enable_rng_clock();
+	if (res)
+		return res;
+
+	if (stm32_rng->rstctrl &&
+	    rstctrl_assert_to(stm32_rng->rstctrl, RNG_RESET_TIMEOUT_US)) {
+		res = TEE_ERROR_GENERIC;
+		goto out;
+	}
+
+	if (stm32_rng->rstctrl &&
+	    rstctrl_deassert_to(stm32_rng->rstctrl, RNG_RESET_TIMEOUT_US)) {
+		res = TEE_ERROR_GENERIC;
+		goto out;
+	}
 
 	if (!stm32_rng->clock_error)
 		cr_ced_mask = RNG_CR_CED;
@@ -272,29 +334,66 @@ static TEE_Result init_rng(void)
 	if (stm32_rng->ddata->has_cond_reset) {
 		uint32_t clock_div = stm32_rng_clock_freq_restrain();
 
-		/* Update configuration fields */
-		io_clrsetbits32(rng_base + RNG_CR, RNG_NIST_CONFIG_MASK,
-				RNG_NIST_CONFIG_B | RNG_CR_CONDRST |
-				cr_ced_mask);
-		io_clrsetbits32(rng_base + RNG_CR, RNG_CR_CLKDIV,
-				clock_div << RNG_CR_CLKDIV_SHIFT);
+		/*
+		 * Keep default RNG configuration if none was specified.
+		 * 0 is an invalid value as it disables all entropy sources.
+		 */
+		if (!stm32_rng->rng_config)
+			stm32_rng->rng_config = io_read32(rng_base + RNG_CR) &
+						RNG_CR_ENTROPY_SRC_MASK;
 
-		/* No need to wait for RNG_CR_CONDRST toggle as we enable clk */
+		/*
+		 * Configuration must be set in the same access that sets
+		 * RNG_CR_CONDRST bit. Otherwise, the configuration setting is
+		 * not taken into account. CONFIGLOCK bit is always cleared at
+		 * this stage.
+		 */
+		io_clrsetbits32(rng_base + RNG_CR, RNG_CONFIG_MASK,
+				stm32_rng->rng_config | RNG_CR_CONDRST |
+				cr_ced_mask |
+				SHIFT_U32(clock_div, RNG_CR_CLKDIV_SHIFT));
+
+		/*
+		 * Write health test and noise source control configuration
+		 * according to current RNG entropy source configuration
+		 */
+		if (stm32_rng->noise_ctrl_conf)
+			io_write32(rng_base + RNG_NSCR,
+				   stm32_rng->noise_ctrl_conf);
+
+		if (stm32_rng->health_test_conf)
+			io_write32(rng_base + RNG_HTCR,
+				   stm32_rng->health_test_conf);
+
 		io_clrsetbits32(rng_base + RNG_CR, RNG_CR_CONDRST,
 				RNG_CR_RNGEN);
+
+		if (IO_READ32_POLL_TIMEOUT(rng_base + RNG_CR, value,
+					   !(value & RNG_CR_CONDRST), 0,
+					   RNG_READY_TIMEOUT_US))
+			panic();
+
+		DMSG("RNG control register %#"PRIx32,
+		     io_read32(rng_base + RNG_CR));
+		DMSG("RNG noise source control register %#"PRIx32,
+		     io_read32(rng_base + RNG_NSCR));
+		DMSG("RNG health test register %#"PRIx32,
+		     io_read32(rng_base + RNG_HTCR));
 	} else {
 		io_setbits32(rng_base + RNG_CR, RNG_CR_RNGEN | cr_ced_mask);
 	}
 
-	timeout_ref = timeout_init_us(RNG_READY_TIMEOUT_US);
-	while (!(io_read32(rng_base + RNG_SR) & RNG_SR_DRDY))
-		if (timeout_elapsed(timeout_ref))
-			break;
-
-	if (!(io_read32(rng_base + RNG_SR) & RNG_SR_DRDY))
+	if (IO_READ32_POLL_TIMEOUT(rng_base + RNG_SR, value,
+				   value & RNG_SR_DRDY, 0,
+				   RNG_READY_TIMEOUT_US))
 		return TEE_ERROR_GENERIC;
 
-	return TEE_SUCCESS;
+	res =  TEE_SUCCESS;
+
+out:
+	disable_rng_clock();
+
+	return res;
 }
 
 static TEE_Result stm32_rng_read(uint8_t *out, size_t size)
@@ -312,7 +411,10 @@ static TEE_Result stm32_rng_read(uint8_t *out, size_t size)
 		return TEE_ERROR_NOT_SUPPORTED;
 	}
 
-	clk_enable(stm32_rng->clock);
+	rc = enable_rng_clock();
+	if (rc)
+		return rc;
+
 	rng_base = get_base();
 
 	/* Arm timeout */
@@ -350,16 +452,22 @@ static TEE_Result stm32_rng_read(uint8_t *out, size_t size)
 
 out:
 	assert(!rc || rc == TEE_ERROR_GENERIC);
-	clk_disable(stm32_rng->clock);
+	disable_rng_clock();
 
 	return rc;
 }
 
 #ifdef CFG_WITH_SOFTWARE_PRNG
-/* Override weak plat_rng_init with platform handler to seed PRNG */
+/* Override weak plat_rng_init with platform handler to attempt to seed PRNG */
 void plat_rng_init(void)
 {
 	uint8_t seed[RNG_FIFO_BYTE_DEPTH] = { };
+
+	if (!stm32_rng) {
+		__plat_rng_init();
+		DMSG("PRNG seeded without RNG");
+		return;
+	}
 
 	if (stm32_rng_read(seed, sizeof(seed)))
 		panic();
@@ -380,7 +488,7 @@ void plat_rng_init(void)
 }
 #endif
 
-static TEE_Result stm32_rng_pm_resume(uint32_t pm_cr)
+static TEE_Result stm32_rng_pm_resume(void)
 {
 	vaddr_t base = get_base();
 
@@ -388,16 +496,65 @@ static TEE_Result stm32_rng_pm_resume(uint32_t pm_cr)
 	io_write32(base + RNG_SR, 0);
 
 	if (stm32_rng->ddata->has_cond_reset) {
+		uint64_t timeout_ref = 0;
+
 		/*
-		 * Correct configuration in bits [29:4] must be set in the same
-		 * access that set RNG_CR_CONDRST bit. Else config setting is
-		 * not taken into account.
+		 * Configuration must be set in the same access that sets
+		 * RNG_CR_CONDRST bit. Otherwise, the configuration setting is
+		 * not taken into account. CONFIGLOCK bit is always cleared in
+		 * this configuration.
 		 */
-		io_write32(base + RNG_CR, pm_cr | RNG_CR_CONDRST);
+		io_write32(base + RNG_CR, stm32_rng->pm_cr | RNG_CR_CONDRST);
+
+		/* Restore health test and noise control configuration */
+		io_write32(base + RNG_NSCR, stm32_rng->pm_noise_ctrl);
+		io_write32(base + RNG_HTCR, stm32_rng->pm_health);
 
 		io_clrsetbits32(base + RNG_CR, RNG_CR_CONDRST, RNG_CR_RNGEN);
+
+		timeout_ref = timeout_init_us(RNG_READY_TIMEOUT_US);
+		while (io_read32(base + RNG_CR) & RNG_CR_CONDRST)
+			if (timeout_elapsed(timeout_ref))
+				break;
+		if (io_read32(base + RNG_CR) & RNG_CR_CONDRST)
+			panic();
 	} else {
-		io_write32(base + RNG_CR, RNG_CR_RNGEN | pm_cr);
+		io_write32(base + RNG_CR, RNG_CR_RNGEN | stm32_rng->pm_cr);
+	}
+
+	return TEE_SUCCESS;
+}
+
+static TEE_Result stm32_rng_pm_suspend(void)
+{
+	vaddr_t rng_base = get_base();
+
+	stm32_rng->pm_cr = io_read32(rng_base + RNG_CR);
+
+	if (stm32_rng->ddata->has_cond_reset) {
+		stm32_rng->pm_health = io_read32(rng_base + RNG_HTCR);
+		stm32_rng->pm_noise_ctrl = io_read32(rng_base + RNG_NSCR);
+	}
+
+	if (stm32_rng->ddata->has_power_optim) {
+		uint64_t timeout_ref = 0;
+
+		/*
+		 * As per reference manual, it is recommended to set
+		 * RNG_CONFIG2[bit0] when RNG power consumption is critical.
+		 */
+		io_setbits32(rng_base + RNG_CR, RNG_CR_POWER_OPTIM |
+				RNG_CR_CONDRST);
+		io_clrbits32(rng_base + RNG_CR, RNG_CR_CONDRST);
+
+		timeout_ref = timeout_init_us(RNG_READY_TIMEOUT_US);
+		while (io_read32(rng_base + RNG_CR) & RNG_CR_CONDRST)
+			if (timeout_elapsed(timeout_ref))
+				break;
+		if (io_read32(rng_base + RNG_CR) & RNG_CR_CONDRST)
+			panic();
+	} else {
+		io_clrbits32(rng_base + RNG_CR, RNG_CR_RNGEN);
 	}
 
 	return TEE_SUCCESS;
@@ -407,21 +564,20 @@ static TEE_Result
 stm32_rng_pm(enum pm_op op, unsigned int pm_hint __unused,
 	     const struct pm_callback_handle *pm_handle __unused)
 {
-	static uint32_t pm_cr;
 	TEE_Result res = TEE_ERROR_GENERIC;
 
 	assert(stm32_rng && (op == PM_OP_SUSPEND || op == PM_OP_RESUME));
 
-	res = clk_enable(stm32_rng->clock);
+	res = enable_rng_clock();
 	if (res)
 		return res;
 
-	if (op == PM_OP_SUSPEND)
-		pm_cr = io_read32(get_base() + RNG_CR);
+	if (op == PM_OP_RESUME)
+		res = stm32_rng_pm_resume();
 	else
-		res = stm32_rng_pm_resume(pm_cr);
+		res = stm32_rng_pm_suspend();
 
-	clk_disable(stm32_rng->clock);
+	disable_rng_clock();
 
 	return res;
 }
@@ -445,23 +601,40 @@ static TEE_Result stm32_rng_parse_fdt(const void *fdt, int node)
 	if (res != TEE_SUCCESS && res != TEE_ERROR_ITEM_NOT_FOUND)
 		return res;
 
-	res = clk_dt_get_by_index(fdt, node, 0, &stm32_rng->clock);
-	if (res)
-		return res;
+	if (stm32_rng->ddata->nb_clock > 1) {
+		res = clk_dt_get_by_name(fdt, node, "rng_clk",
+					 &stm32_rng->clock);
+		if (res)
+			return res;
+
+		res = clk_dt_get_by_name(fdt, node, "rng_hclk",
+					 &stm32_rng->bus_clock);
+		if (res)
+			return res;
+	} else {
+		res = clk_dt_get_by_index(fdt, node, 0, &stm32_rng->clock);
+		if (res)
+			return res;
+	}
 
 	if (fdt_getprop(fdt, node, "clock-error-detect", NULL))
 		stm32_rng->clock_error = true;
 
-	/* Release device if not used at runtime or for pm transitions */
-	stm32_rng->release_post_boot = IS_ENABLED(CFG_WITH_SOFTWARE_PRNG) &&
-				       !IS_ENABLED(CFG_PM);
+	stm32_rng->rng_config = stm32_rng->ddata->cr;
+	if (stm32_rng->rng_config & ~RNG_CR_ENTROPY_SRC_MASK)
+		panic("Incorrect entropy source configuration");
+	stm32_rng->health_test_conf = stm32_rng->ddata->htcr;
+	stm32_rng->noise_ctrl_conf = stm32_rng->ddata->nscr;
+	if (stm32_rng->noise_ctrl_conf & ~RNG_NSCR_MASK)
+		panic("Incorrect noise source control configuration");
 
 	return TEE_SUCCESS;
 }
 
 static TEE_Result stm32_rng_probe(const void *fdt, int offs,
-				  const void *compat_data __unused)
+				  const void *compat_data)
 {
+	unsigned int __maybe_unused version = 0;
 	TEE_Result res = TEE_ERROR_GENERIC;
 
 	/* Expect a single RNG instance */
@@ -471,46 +644,38 @@ static TEE_Result stm32_rng_probe(const void *fdt, int offs,
 	if (!stm32_rng)
 		panic();
 
+	stm32_rng->ddata = compat_data;
+	assert(stm32_rng->ddata);
+
 	res = stm32_rng_parse_fdt(fdt, offs);
 	if (res)
 		goto err;
 
-	stm32_rng->ddata = compat_data;
-	assert(stm32_rng->ddata);
-
-	res = clk_enable(stm32_rng->clock);
+	res = enable_rng_clock();
 	if (res)
 		goto err;
 
-	if (stm32_rng->rstctrl &&
-	    rstctrl_assert_to(stm32_rng->rstctrl, RNG_RESET_TIMEOUT_US)) {
-		res = TEE_ERROR_GENERIC;
-		goto err_clk;
-	}
+	version = io_read32(get_base() + RNG_VERR);
+	DMSG("RNG version Major %u, Minor %u",
+	     (version & RNG_VERR_MAJOR_MASK) >> RNG_VERR_MAJOR_SHIFT,
+	     version & RNG_VERR_MINOR_MASK);
 
-	if (stm32_rng->rstctrl &&
-	    rstctrl_deassert_to(stm32_rng->rstctrl, RNG_RESET_TIMEOUT_US)) {
-		res = TEE_ERROR_GENERIC;
-		goto err_clk;
-	}
+	disable_rng_clock();
 
-	res = init_rng();
+	res = stm32_rng_init();
 	if (res)
-		goto err_clk;
+		goto err;
 
-	clk_disable(stm32_rng->clock);
+	/* Power management implementation expects both or none are set */
+	assert(stm32_rng->ddata->has_power_optim ==
+	       stm32_rng->ddata->has_cond_reset);
 
-	if (stm32_rng->release_post_boot)
-		stm32mp_register_non_secure_periph_iomem(stm32_rng->base.pa);
-	else
-		stm32mp_register_secure_periph_iomem(stm32_rng->base.pa);
-
-	register_pm_core_service_cb(stm32_rng_pm, &stm32_rng, "rng-service");
+	if (!IS_ENABLED(CFG_WITH_SOFTWARE_PRNG))
+		register_pm_core_service_cb(stm32_rng_pm, &stm32_rng,
+					    "rng-service");
 
 	return TEE_SUCCESS;
 
-err_clk:
-	clk_disable(stm32_rng->clock);
 err:
 	free(stm32_rng);
 	stm32_rng = NULL;
@@ -519,17 +684,43 @@ err:
 }
 
 static const struct stm32_rng_driver_data mp13_data[] = {
-	{ .has_cond_reset = true },
+	{
+		.max_noise_clk_freq = U(48000000),
+		.nb_clock = 1,
+		.has_cond_reset = true,
+		.has_power_optim = true,
+		.cr = 0x00F00D00,
+		.nscr = 0x2B5BB,
+		.htcr = 0x969D,
+	},
 };
 
 static const struct stm32_rng_driver_data mp15_data[] = {
-	{ .has_cond_reset = false },
+	{
+		.max_noise_clk_freq = U(48000000),
+		.nb_clock = 1,
+		.has_cond_reset = false,
+		.has_power_optim = false,
+	},
 };
 DECLARE_KEEP_PAGER(mp15_data);
+
+static const struct stm32_rng_driver_data mp25_data[] = {
+	{
+		.max_noise_clk_freq = U(48000000),
+		.nb_clock = 2,
+		.has_cond_reset = true,
+		.has_power_optim = true,
+		.cr = 0x00F00D00,
+		.nscr = 0x2B5BB,
+		.htcr = 0x969D,
+	},
+};
 
 static const struct dt_device_match rng_match_table[] = {
 	{ .compatible = "st,stm32-rng", .compat_data = &mp15_data },
 	{ .compatible = "st,stm32mp13-rng", .compat_data = &mp13_data },
+	{ .compatible = "st,stm32mp25-rng", .compat_data = &mp25_data },
 	{ }
 };
 
@@ -541,7 +732,7 @@ DEFINE_DT_DRIVER(stm32_rng_dt_driver) = {
 
 static TEE_Result stm32_rng_release(void)
 {
-	if (stm32_rng && stm32_rng->release_post_boot) {
+	if (stm32_rng && IS_ENABLED(CFG_WITH_SOFTWARE_PRNG)) {
 		DMSG("Release RNG driver");
 		free(stm32_rng);
 		stm32_rng = NULL;

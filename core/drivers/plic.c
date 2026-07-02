@@ -35,22 +35,46 @@
 		((base) + PLIC_PENDING_OFFSET + \
 		(4 * ((source) / 32)) \
 	)
-#define PLIC_ENABLE(base, source, hart) \
+#define PLIC_ENABLE(base, source, context) \
 		((base) + PLIC_ENABLE_OFFSET + \
-		SHIFT_U32(hart, PLIC_ENABLE_SHIFT_PER_TARGET) +\
+		SHIFT_U32(context, PLIC_ENABLE_SHIFT_PER_TARGET) +\
 		(4 * ((source) / 32)) \
 	)
-#define PLIC_THRESHOLD(base, hart) \
+#define PLIC_THRESHOLD(base, context) \
 		((base) + PLIC_THRESHOLD_OFFSET + \
-		SHIFT_U32(hart, PLIC_THRESHOLD_SHIFT_PER_TARGET) \
+		SHIFT_U32(context, PLIC_THRESHOLD_SHIFT_PER_TARGET) \
 	)
-#define PLIC_COMPLETE(base, hart) \
+#define PLIC_COMPLETE(base, context) \
 		((base) + PLIC_CLAIM_OFFSET + \
-		SHIFT_U32(hart, PLIC_CLAIM_SHIFT_PER_TARGET) \
+		SHIFT_U32(context, PLIC_CLAIM_SHIFT_PER_TARGET) \
 	)
-#define PLIC_CLAIM(base, hart) PLIC_COMPLETE(base, hart)
+#define PLIC_CLAIM(base, context) PLIC_COMPLETE(base, context)
 
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, PLIC_BASE, PLIC_REG_SIZE);
+
+struct plic_data {
+	vaddr_t plic_base;
+	size_t max_it;
+	struct itr_chip chip;
+};
+
+static struct plic_data plic_data __nex_bss;
+
+/*
+ * We assume that each hart has M-mode and S-mode, so the contexts look like:
+ * PLIC context 0 is hart 0 M-mode
+ * PLIC context 1 is hart 0 S-mode
+ * PLIC context 2 is hart 1 M-mode
+ * PLIC context 3 is hart 1 S-mode
+ * ...
+ */
+static uint32_t plic_get_context(void)
+{
+	size_t hartid = get_core_pos();
+	bool smode = IS_ENABLED(CFG_RISCV_S_MODE) ? true : false;
+
+	return hartid * 2 + smode;
+}
 
 static bool __maybe_unused
 plic_is_pending(struct plic_data *pd, uint32_t source)
@@ -66,31 +90,41 @@ static void plic_set_pending(struct plic_data *pd, uint32_t source)
 
 static void plic_enable_interrupt(struct plic_data *pd, uint32_t source)
 {
-	io_setbits32(PLIC_ENABLE(pd->plic_base, source, get_core_pos()),
+	uint32_t context = plic_get_context();
+
+	io_setbits32(PLIC_ENABLE(pd->plic_base, source, context),
 		     BIT(source & 0x1f));
 }
 
 static uint32_t __maybe_unused
 plic_get_interrupt_enable(struct plic_data *pd, uint32_t source)
 {
-	return io_read32(PLIC_ENABLE(pd->plic_base, source, get_core_pos())) &
+	uint32_t context = plic_get_context();
+
+	return io_read32(PLIC_ENABLE(pd->plic_base, source, context)) &
 	       BIT(source & 0x1f);
 }
 
 static void plic_disable_interrupt(struct plic_data *pd, uint32_t source)
 {
-	io_clrbits32(PLIC_ENABLE(pd->plic_base, source, get_core_pos()),
+	uint32_t context = plic_get_context();
+
+	io_clrbits32(PLIC_ENABLE(pd->plic_base, source, context),
 		     BIT(source & 0x1f));
 }
 
 static uint32_t __maybe_unused plic_get_threshold(struct plic_data *pd)
 {
-	return io_read32(PLIC_THRESHOLD(pd->plic_base, get_core_pos()));
+	uint32_t context = plic_get_context();
+
+	return io_read32(PLIC_THRESHOLD(pd->plic_base, context));
 }
 
 static void plic_set_threshold(struct plic_data *pd, uint32_t threshold)
 {
-	io_write32(PLIC_THRESHOLD(pd->plic_base, get_core_pos()), threshold);
+	uint32_t context = plic_get_context();
+
+	io_write32(PLIC_THRESHOLD(pd->plic_base, context), threshold);
 }
 
 static uint32_t __maybe_unused
@@ -107,17 +141,20 @@ static void plic_set_priority(struct plic_data *pd, uint32_t source,
 
 static uint32_t plic_claim_interrupt(struct plic_data *pd)
 {
-	return io_read32(PLIC_CLAIM(pd->plic_base, get_core_pos()));
+	uint32_t context = plic_get_context();
+
+	return io_read32(PLIC_CLAIM(pd->plic_base, context));
 }
 
 static void plic_complete_interrupt(struct plic_data *pd, uint32_t source)
 {
-	io_write32(PLIC_CLAIM(pd->plic_base, get_core_pos()), source);
+	uint32_t context = plic_get_context();
+
+	io_write32(PLIC_CLAIM(pd->plic_base, context), source);
 }
 
-static void plic_op_add(struct itr_chip *chip, size_t it,
-			uint32_t type __unused,
-			uint32_t prio)
+static void plic_op_configure(struct itr_chip *chip, size_t it,
+			      uint32_t type __unused, uint32_t prio)
 {
 	struct plic_data *pd = container_of(chip, struct plic_data, chip);
 
@@ -159,7 +196,7 @@ static void plic_op_raise_pi(struct itr_chip *chip, size_t it)
 }
 
 static void plic_op_raise_sgi(struct itr_chip *chip __unused,
-			      size_t it __unused, uint8_t cpu_mask __unused)
+			      size_t it __unused, uint32_t cpu_mask __unused)
 {
 }
 
@@ -181,7 +218,9 @@ static size_t probe_max_it(vaddr_t plic_base __unused)
 }
 
 static const struct itr_ops plic_ops = {
-	.add = plic_op_add,
+	.configure = plic_op_configure,
+	.mask = plic_op_disable,
+	.unmask = plic_op_enable,
 	.enable = plic_op_enable,
 	.disable = plic_op_disable,
 	.raise_pi = plic_op_raise_pi,
@@ -189,7 +228,7 @@ static const struct itr_ops plic_ops = {
 	.set_affinity = plic_op_set_affinity,
 };
 
-void plic_init_base_addr(struct plic_data *pd, paddr_t plic_base_pa)
+static void plic_init_base_addr(struct plic_data *pd, paddr_t plic_base_pa)
 {
 	vaddr_t plic_base = 0;
 
@@ -208,13 +247,14 @@ void plic_init_base_addr(struct plic_data *pd, paddr_t plic_base_pa)
 		pd->chip.dt_get_irq = plic_dt_get_irq;
 }
 
-void plic_hart_init(struct plic_data *pd __unused)
+void plic_hart_init(void)
 {
 	/* TODO: To be called by secondary harts */
 }
 
-void plic_init(struct plic_data *pd, paddr_t plic_base_pa)
+void plic_init(paddr_t plic_base_pa)
 {
+	struct plic_data *pd = &plic_data;
 	size_t n = 0;
 
 	plic_init_base_addr(pd, plic_base_pa);
@@ -225,14 +265,17 @@ void plic_init(struct plic_data *pd, paddr_t plic_base_pa)
 	}
 
 	plic_set_threshold(pd, 0);
+
+	interrupt_main_init(&plic_data.chip);
 }
 
-void plic_it_handle(struct plic_data *pd)
+void plic_it_handle(void)
 {
+	struct plic_data *pd = &plic_data;
 	uint32_t id = plic_claim_interrupt(pd);
 
-	if (id <= pd->max_it)
-		itr_handle(id);
+	if (id > 0 && id <= pd->max_it)
+		interrupt_call_handlers(&pd->chip, id);
 	else
 		DMSG("ignoring interrupt %" PRIu32, id);
 

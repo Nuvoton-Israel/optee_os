@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * Copyright (c) 2015-2020, Linaro Limited
+ * Copyright (c) 2015-2025, Linaro Limited
  * Copyright (c) 2021-2023, Arm Limited
  */
 #ifndef __KERNEL_BOOT_H
 #define __KERNEL_BOOT_H
 
 #include <initcall.h>
+#include <kernel/dt.h>
 #include <types_ext.h>
 
 /*
@@ -40,14 +41,18 @@ struct boot_embdata {
 	uint32_t reloc_len;
 };
 
+extern unsigned long boot_arg_nsec_entry;
+
 extern const struct core_mmu_config boot_mmu_config;
 
-/* @nsec_entry is unused if using CFG_WITH_ARM_TRUSTED_FW */
-void boot_init_primary_early(unsigned long pageable_part,
-			     unsigned long nsec_entry);
-void boot_init_primary_late(unsigned long fdt, unsigned long tos_fw_config);
+void boot_init_primary_early(void);
+void boot_init_primary_late(unsigned long fdt, unsigned long manifest);
+void boot_init_primary_runtime(void);
+void boot_init_primary_final(void);
 void boot_init_memtag(void);
-void boot_save_boot_info(void *boot_info);
+void boot_clear_memtag(void);
+void boot_save_args(unsigned long a0, unsigned long a1, unsigned long a2,
+		    unsigned long a3, unsigned long a4);
 
 void __panic_at_smc_return(void) __noreturn;
 
@@ -59,6 +64,7 @@ void boot_init_secondary(unsigned long nsec_entry);
 #endif
 
 void boot_primary_init_intc(void);
+void boot_primary_init_core_ids(void);
 void boot_secondary_init_intc(void);
 
 void init_sec_mon(unsigned long nsec_entry);
@@ -91,15 +97,34 @@ int boot_core_release(size_t core_idx, paddr_t entry);
 struct ns_entry_context *boot_core_hpen(void);
 #endif
 
-/* Returns TOS_FW_CONFIG DTB if present, otherwise NULL */
-void *get_tos_fw_config_dt(void);
-
 /*
  * get_aslr_seed() - return a random seed for core ASLR
- * @fdt:	Pointer to a device tree if CFG_DT_ADDR=y
  *
  * This function has a __weak default implementation.
  */
-unsigned long get_aslr_seed(void *fdt);
+unsigned long get_aslr_seed(void);
+
+/* Identify non-secure memory regions for dynamic shared memory */
+void discover_nsec_memory(void);
+/* Add reserved memory for static shared memory in the device-tree */
+int mark_static_shm_as_reserved(struct dt_descriptor *dt);
+
+/*
+ * Stack-like memory allocations during boot before a heap has been
+ * configured. boot_mem_relocate() performs relocation of the boot memory
+ * and address cells registered with boot_mem_add_reloc() during virtual
+ * memory initialization. Unused memory is unmapped and released to pool of
+ * free physical memory once MMU is initialized.
+ */
+void boot_mem_init(vaddr_t start, vaddr_t end, vaddr_t orig_end);
+void boot_mem_init_asan(void);
+void boot_mem_foreach_padding(bool (*func)(vaddr_t va, size_t len, void *ptr),
+			      void *ptr);
+void boot_mem_add_reloc(void *ptr);
+void boot_mem_relocate(size_t offs);
+void *boot_mem_alloc(size_t len, size_t align);
+void *boot_mem_alloc_tmp(size_t len, size_t align);
+vaddr_t boot_mem_release_unused(void);
+void boot_mem_release_tmp_alloc(void);
 
 #endif /* __KERNEL_BOOT_H */

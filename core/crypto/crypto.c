@@ -11,7 +11,6 @@
 #include <crypto/crypto_impl.h>
 #include <kernel/panic.h>
 #include <stdlib.h>
-#include <string.h>
 #include <utee_defines.h>
 
 TEE_Result crypto_hash_alloc_ctx(void **ctx, uint32_t algo)
@@ -598,6 +597,7 @@ TEE_Result crypto_acipher_rsaes_decrypt(uint32_t algo __unused,
 					struct rsa_keypair *key __unused,
 					const uint8_t *label __unused,
 					size_t label_len __unused,
+					uint32_t mgf_algo __unused,
 					const uint8_t *src __unused,
 					size_t src_len __unused,
 					uint8_t *dst __unused,
@@ -610,6 +610,7 @@ TEE_Result crypto_acipher_rsaes_encrypt(uint32_t algo __unused,
 					struct rsa_public_key *key __unused,
 					const uint8_t *label __unused,
 					size_t label_len __unused,
+					uint32_t mgf_algo __unused,
 					const uint8_t *src __unused,
 					size_t src_len __unused,
 					uint8_t *dst __unused,

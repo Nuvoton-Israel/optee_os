@@ -29,8 +29,10 @@
 #define RNG_ESR			0x10
 #define RNG_OUT			0x14
 
+#define RNG_CMD_SEED		BIT(1)
 #define RNG_CMD_CLR_INT		BIT(4)
 #define RNG_CMD_CLR_ERR		BIT(5)
+#define RNG_CMD_SOFT_RESET	BIT(6)
 
 #define RNG_CR_AR		BIT(4)
 #define RNG_CR_MASK_DONE	BIT(5)
@@ -85,12 +87,21 @@ static void wait_for_irq(struct imx_rng *rng)
 	} while ((status & (RNG_SR_SEED_DONE | RNG_SR_ST_DONE)) == 0);
 }
 
+static void soft_reset(struct imx_rng *rng)
+{
+	io_setbits32(rng->base.va + RNG_CMD, RNG_CMD_SOFT_RESET);
+}
+
 static void irq_clear(struct imx_rng *rng)
+{
+	io_setbits32(rng->base.va + RNG_CMD,
+		     RNG_CMD_CLR_ERR | RNG_CMD_CLR_INT);
+}
+
+static void irq_mask(struct imx_rng *rng)
 {
 	io_setbits32(rng->base.va + RNG_CR,
 		     RNG_CR_MASK_DONE | RNG_CR_MASK_ERROR);
-	io_setbits32(rng->base.va + RNG_CMD,
-		     RNG_CMD_CLR_INT | RNG_CMD_CLR_ERR);
 }
 
 static void irq_unmask(struct imx_rng *rng)
@@ -104,16 +115,24 @@ static void rng_seed(struct imx_rng *rng)
 	uint64_t tref = timeout_init_us(SEED_TIMEOUT);
 
 	irq_clear(rng);
+	irq_mask(rng);
 	do {
 		irq_unmask(rng);
-		/* configure continuous auto-reseed */
-		io_setbits32(rng->base.va + RNG_CR, RNG_CR_AR);
+		/* seed creation */
+		io_setbits32(rng->base.va + RNG_CMD, RNG_CMD_SEED);
 		wait_for_irq(rng);
-		irq_clear(rng);
+		if (rng->error)
+			soft_reset(rng);
+		else
+			irq_clear(rng);
+		irq_mask(rng);
 
 		if (timeout_elapsed(tref))
 			panic();
 	} while (rng->error);
+
+	/* configure continuous auto-reseed */
+	io_setbits32(rng->base.va + RNG_CR, RNG_CR_AR);
 }
 
 static TEE_Result map_controller_static(void)
@@ -217,4 +236,4 @@ static TEE_Result rngb_init(void)
 	return TEE_SUCCESS;
 }
 
-driver_init(rngb_init);
+early_init(rngb_init);

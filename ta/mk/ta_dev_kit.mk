@@ -7,6 +7,8 @@ all:
 include $(ta-dev-kit-dir)/mk/conf.mk
 ta-dev-kit-dir$(sm) := $(ta-dev-kit-dir)
 
+include $(ta-dev-kit-dir$(sm))/mk/macros.mk
+
 ifneq (1, $(words $(BINARY) $(LIBNAME) $(SHLIBNAME)))
 $(error You must specify exactly one of BINARY, LIBNAME or SHLIBNAME)
 endif
@@ -77,6 +79,20 @@ ifeq ($(CFG_TA_MCOUNT),y)
 cppflags$(sm) += -pg
 endif
 
+ifeq ($(CFG_TA_SANITIZE_UNDEFINED),y)
+cflags$(sm) += -fsanitize=undefined
+endif
+
+ifeq ($(CFG_TA_SANITIZE_KADDRESS),y)
+cflags$(sm) += \
+        -fsanitize=kernel-address \
+        -fasan-shadow-offset=$(CFG_USER_ASAN_SHADOW_OFFSET) \
+        --param=asan-globals=1 \
+        --param=asan-instrumentation-with-call-threshold=0 \
+        --param=asan-stack=1
+endif
+
+
 libdirs += $(ta-dev-kit-dir$(sm))/lib
 libnames += utils
 libdeps += $(ta-dev-kit-dir$(sm))/lib/libutils.a
@@ -99,9 +115,9 @@ libdeps += $(ta-dev-kit-dir$(sm))/lib/libdl.a
 libnames-after-libgcc += utils
 libdeps-after-libgcc += $(ta-dev-kit-dir$(sm))/lib/libutils.a
 
-# Pass config variable (CFG_) from conf.mk on the command line
+# Pass config variable (CFG_) and (_CFG_) from conf.mk on the command line
 cppflags$(sm) += $(strip \
-	$(foreach var, $(filter CFG_%,$(.VARIABLES)), \
+	$(foreach var, $(filter CFG_% _CFG_%,$(.VARIABLES)), \
 		$(if $(filter y,$($(var))), \
 			-D$(var)=1, \
 			$(if $(filter xn x,x$($(var))),,-D$(var)='$($(var))'))))
@@ -124,11 +140,10 @@ include  $(ta-dev-kit-dir$(sm))/mk/subdir.mk
 
 ifneq ($(user-ta-uuid),)
 # Build target is TA
-vpath %.c $(ta-dev-kit-dir$(sm))/src
-srcs += user_ta_header.c
+spec-out-dir := $(link-out-dir$(sm))
+spec-srcs += $(ta-dev-kit-dir$(sm))/src/user_ta_header.c
 ifeq ($(sm),ta_arm32)
-vpath %.S $(ta-dev-kit-dir$(sm))/src
-srcs += ta_entry_a32.S
+spec-srcs += $(ta-dev-kit-dir$(sm))/src/ta_entry_a32.S
 endif
 endif
 

@@ -3,10 +3,11 @@
  * Copyright (c) 2017-2023, STMicroelectronics
  */
 
-#ifndef DRIVERS_STM32_GPIO_H
-#define DRIVERS_STM32_GPIO_H
+#ifndef __DRIVERS_STM32_GPIO_H
+#define __DRIVERS_STM32_GPIO_H
 
 #include <assert.h>
+#include <drivers/gpio.h>
 #include <drivers/pinctrl.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -17,34 +18,6 @@ struct stm32_pinctrl;
 
 #ifdef CFG_STM32_GPIO
 /*
- * Configure pin muxing access permission: can be secure or not
- *
- * @bank: GPIO bank identifier as assigned by the platform
- * @pin: Pin number in the GPIO bank
- * @secure: True if pin is secure, false otherwise
- */
-void stm32_gpio_set_secure_cfg(unsigned int bank, unsigned int pin,
-			       bool secure);
-
-/*
- * Get the number of GPIO pins supported by a target GPIO bank
- *
- * @fdt: device tree reference
- * @pinctrl_node: pinctrl node which GPIO bank node belongs to
- * @bank: target GPIO bank ID
- * Return number of GPIO pins (>= 0) or a negative value on error
- */
-int stm32_get_gpio_count(void *fdt, int pinctrl_node, unsigned int bank);
-
-/*
- * Configure pin muxing access permission: can be secure or not
- *
- * @pinctrl: Pin control state where STM32_GPIO pin are to configure
- * @secure: True if pin is secure, false otherwise
- */
-void stm32_pinctrl_set_secure_cfg(struct pinctrl_state *pinctrl, bool secure);
-
-/*
  * Get the bank and pin indices related to a pin control state
  * @pinctrl: Pinctrl state
  * @bank: Output bank indices array or NULL
@@ -54,18 +27,24 @@ void stm32_pinctrl_set_secure_cfg(struct pinctrl_state *pinctrl, bool secure);
 void stm32_gpio_pinctrl_bank_pin(struct pinctrl_state *pinctrl,
 				 unsigned int *bank, unsigned int *pin,
 				 unsigned int *count);
-#else
-static inline void
-stm32_pinctrl_set_secure_cfg(struct pinctrl_state *pinctrl __unused,
-			     bool secure __unused)
-{
-}
 
+/*
+ * stm32_gpio_chip_bank_id() - Get the GPIO bank ID associated to a chip
+ * @chip: GPIO chip associated to the bank
+ */
+unsigned int stm32_gpio_chip_bank_id(struct gpio_chip *chip);
+#else
 static inline void stm32_gpio_pinctrl_bank_pin(struct pinctrl_state *p __unused,
 					       unsigned int *bank __unused,
 					       unsigned int *pin __unused,
 					       unsigned int *count __unused)
 {
 }
+
+static inline unsigned int __noreturn
+stm32_gpio_chip_bank_id(struct gpio_chip *chip __unused)
+{
+	panic();
+}
 #endif /*CFG_STM32_GPIO*/
-#endif /*DRIVERS_STM32_GPIO_H*/
+#endif /*__DRIVERS_STM32_GPIO_H*/

@@ -6,13 +6,14 @@
 #ifndef __DRIVERS_CLK_DT_H
 #define __DRIVERS_CLK_DT_H
 
+#include <drivers/clk.h>
 #include <kernel/dt_driver.h>
 #include <scattered_array.h>
 #include <stdint.h>
 #include <sys/queue.h>
 
 /**
- * CLK_DT_DECLARE - Declare a clock driver
+ * CLK_DT_DECLARE() - Declare a clock driver
  * @__name: Clock driver name
  * @__compat: Compatible string
  * @__probe: Clock probe function
@@ -30,7 +31,7 @@
 	}
 
 /**
- * clk_dt_get_by_index - Get a clock at a specific index in "clocks" property
+ * clk_dt_get_by_index() - Get a clock at a specific index in "clocks" property
  *
  * @fdt: Device tree to work on
  * @nodeoffset: Node offset of the subnode containing a clock property
@@ -46,7 +47,7 @@ TEE_Result clk_dt_get_by_index(const void *fdt, int nodeoffset,
 			       unsigned int clk_idx, struct clk **clk);
 
 /**
- * clk_dt_get_by_name - Get a clock matching a name in "clock-names" property
+ * clk_dt_get_by_name() - Get a clock matching a name in "clock-names" property
  *
  * @fdt: Device tree to work on
  * @nodeoffset: Node offset of the subnode containing a clock property
@@ -72,7 +73,7 @@ typedef TEE_Result (*clk_dt_get_func)(struct dt_pargs *args, void *data,
 				      struct clk **out_clk);
 
 /**
- * clk_dt_register_clk_provider - Register a clock provider
+ * clk_dt_register_clk_provider() - Register a clock provider
  *
  * @fdt: Device tree to work on
  * @nodeoffset: Node offset of the clock
@@ -91,8 +92,12 @@ static inline TEE_Result clk_dt_register_clk_provider(const void *fdt,
 }
 
 /**
- * clk_dt_get_simple_clk: simple clock matching function for single clock
+ * clk_dt_get_simple_clk() - Simple clock matching function for single clock
  * providers
+ *
+ * @args: Unused argument as there is no description to parse
+ * @data: Pointer to data given at clk_dt_register_clk_provider() call
+ * @out_clk: Output clock reference filled with @data
  */
 static inline TEE_Result clk_dt_get_simple_clk(struct dt_pargs *args __unused,
 					       void *data, struct clk **out_clk)

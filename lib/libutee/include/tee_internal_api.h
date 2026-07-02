@@ -125,8 +125,8 @@ void *__GP11_TEE_Realloc(void *buffer, uint32_t newSize);
 
 void TEE_Free(void *buffer);
 
-void *TEE_MemMove(void *dest, const void *src, size_t size);
-void *__GP11_TEE_MemMove(void *dest, const void *src, uint32_t size);
+void TEE_MemMove(void *dest, const void *src, size_t size);
+void __GP11_TEE_MemMove(void *dest, const void *src, uint32_t size);
 
 /*
  * Note: TEE_MemCompare() has a constant-time implementation (execution time
@@ -628,10 +628,6 @@ void TEE_BigIntConvertToFMM(TEE_BigIntFMM *dest, const TEE_BigInt *src,
 void TEE_BigIntConvertFromFMM(TEE_BigInt *dest, const TEE_BigIntFMM *src,
 			      const TEE_BigInt *n,
 			      const TEE_BigIntFMMContext *context);
-
-void TEE_BigIntFMMConvertToBigInt(TEE_BigInt *dest, const TEE_BigIntFMM *src,
-				  const TEE_BigInt *n,
-				  const TEE_BigIntFMMContext *context);
 
 void TEE_BigIntComputeFMM(TEE_BigIntFMM *dest, const TEE_BigIntFMM *op1,
 			  const TEE_BigIntFMM *op2, const TEE_BigInt *n,

@@ -7,7 +7,6 @@
 #include <drivers/clk.h>
 #include <drivers/clk_dt.h>
 #include <initcall.h>
-#include <kernel/boot.h>
 #include <kernel/dt.h>
 #include <kernel/dt_driver.h>
 #include <kernel/panic.h>
@@ -148,7 +147,7 @@ static void parse_assigned_clock(const void *fdt, int nodeoffset)
 	unsigned long rate = 0;
 	struct clk *parent = NULL;
 	const uint32_t *rate_prop = NULL;
-	TEE_Result __maybe_unused res = TEE_ERROR_GENERIC;
+	TEE_Result res = TEE_ERROR_GENERIC;
 
 	rate_prop = fdt_getprop(fdt, nodeoffset, "assigned-clock-rates",
 				&rate_len);
@@ -157,9 +156,9 @@ static void parse_assigned_clock(const void *fdt, int nodeoffset)
 	while (true) {
 		res = clk_dt_get_by_idx_prop("assigned-clocks", fdt, nodeoffset,
 					     clock_idx, &clk);
-		if (!clk)
+		if (res)
 			return;
-		assert(!res);
+		assert(clk);
 
 		res = clk_dt_get_by_idx_prop("assigned-clock-parents", fdt,
 					     nodeoffset, clock_idx, &parent);

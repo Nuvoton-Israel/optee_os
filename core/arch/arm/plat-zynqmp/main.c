@@ -45,6 +45,7 @@
 #include <mm/core_memprot.h>
 #include <tee/tee_fs.h>
 #include <trace.h>
+#include <initcall.h>
 
 static struct cdns_uart_data console_data __nex_bss;
 
@@ -80,7 +81,7 @@ void boot_primary_init_intc(void)
 	gic_init(GIC_BASE + GICC_OFFSET, GIC_BASE + GICD_OFFSET);
 }
 
-void console_init(void)
+void plat_console_init(void)
 {
 	cdns_uart_init(&console_data, CONSOLE_UART_BASE,
 		       CONSOLE_UART_CLK_IN_HZ, CONSOLE_BAUDRATE);
@@ -108,3 +109,12 @@ bool plat_rpmb_key_is_ready(void)
 	return false;
 }
 #endif
+
+static TEE_Result platform_banner(void)
+{
+	IMSG("OP-TEE OS Running on Platform AMD ZynqMP");
+
+	return TEE_SUCCESS;
+}
+
+service_init(platform_banner);

@@ -71,7 +71,7 @@ static TEE_Result copy_mpi_to_bigint(mbedtls_mpi *mpi, TEE_BigInt *bigInt)
 
 	hdr->nblimbs = n;
 	hdr->sign = mpi->s;
-	memcpy(hdr + 1, mpi->p, mpi->n * sizeof(mbedtls_mpi_uint));
+	memcpy(hdr + 1, mpi->p, n * sizeof(mbedtls_mpi_uint));
 
 	return TEE_SUCCESS;
 }
@@ -726,10 +726,6 @@ out:
 	return res;
 }
 
-/*
- * Based on libmpa implementation __mpa_egcd(), modified to work with MPI
- * instead.
- */
 static void mpi_egcd(mbedtls_mpi *gcd, mbedtls_mpi *a, mbedtls_mpi *b,
 		     mbedtls_mpi *x_in, mbedtls_mpi *y_in)
 {
@@ -868,8 +864,10 @@ void TEE_BigIntComputeExtendedGcd(TEE_BigInt *gcd, TEE_BigInt *u,
 		mpi_u.s *= s1;
 		mpi_v.s *= s2;
 
-		MPI_CHECK(copy_mpi_to_bigint(&mpi_u, u));
-		MPI_CHECK(copy_mpi_to_bigint(&mpi_v, v));
+		if (u)
+			MPI_CHECK(copy_mpi_to_bigint(&mpi_u, u));
+		if (v)
+			MPI_CHECK(copy_mpi_to_bigint(&mpi_v, v));
 		mbedtls_mpi_free(&mpi_u);
 		mbedtls_mpi_free(&mpi_v);
 	}
@@ -889,14 +887,15 @@ static int rng_read(void *ignored __unused, unsigned char *buf, size_t blen)
 }
 
 int32_t TEE_BigIntIsProbablePrime(const TEE_BigInt *op,
-				  uint32_t confidenceLevel __unused)
+				  uint32_t confidenceLevel)
 {
 	int rc;
 	mbedtls_mpi mpi_op;
 
 	get_mpi(&mpi_op, op);
 
-	rc = mbedtls_mpi_is_prime(&mpi_op, rng_read, NULL);
+	rc = mbedtls_mpi_is_prime_ext(&mpi_op, MAX(confidenceLevel, 80U),
+				      rng_read, NULL);
 
 	mbedtls_mpi_free(&mpi_op);
 

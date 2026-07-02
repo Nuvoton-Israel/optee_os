@@ -2,9 +2,11 @@
 /*
  * Copyright (c) 2015-2023, Linaro Limited
  * Copyright (c) 2023, Arm Limited
+ * Copyright (c) 2025, NVIDIA Corporation & AFFILIATES.
  */
 
 #include <arm.h>
+#include <asan.h>
 #include <assert.h>
 #include <compiler.h>
 #include <config.h>
@@ -15,8 +17,8 @@
 #include <ffa.h>
 #include <initcall.h>
 #include <inttypes.h>
+#include <io.h>
 #include <keep.h>
-#include <kernel/asan.h>
 #include <kernel/boot.h>
 #include <kernel/dt.h>
 #include <kernel/linker.h>
@@ -25,16 +27,19 @@
 #include <kernel/tee_misc.h>
 #include <kernel/thread.h>
 #include <kernel/tpm.h>
+#include <kernel/transfer_list.h>
 #include <libfdt.h>
 #include <malloc.h>
 #include <memtag.h>
 #include <mm/core_memprot.h>
 #include <mm/core_mmu.h>
 #include <mm/fobj.h>
+#include <mm/page_alloc.h>
+#include <mm/phys_mem.h>
 #include <mm/tee_mm.h>
 #include <mm/tee_pager.h>
 #include <sm/psci.h>
-#include <stdio.h>
+#include <stdalign.h>
 #include <trace.h>
 #include <utee_defines.h>
 #include <util.h>
@@ -78,11 +83,17 @@ uint32_t sem_cpu_sync[CFG_TEE_CORE_NB_CORE];
 DECLARE_KEEP_PAGER(sem_cpu_sync);
 #endif
 
-#ifdef CFG_DT
-#ifdef CFG_CORE_SEL1_SPMC
-static struct dt_descriptor tos_fw_config_dt __nex_bss;
-#endif
-#endif
+/*
+ * Must not be in .bss since it's initialized and used from assembly before
+ * .bss is cleared.
+ */
+vaddr_t boot_cached_mem_end __nex_data = 1;
+
+static unsigned long boot_arg_fdt __nex_bss;
+unsigned long boot_arg_nsec_entry __nex_bss;
+static unsigned long boot_arg_pageable_part __nex_bss;
+static unsigned long boot_arg_transfer_list __nex_bss;
+static struct transfer_list_header *mapped_tl __nex_bss;
 
 #ifdef CFG_SECONDARY_INIT_CNTFRQ
 static uint32_t cntfrq;
@@ -111,36 +122,6 @@ __weak unsigned long plat_get_aslr_seed(void)
 
 	return 0;
 }
-
-#if defined(_CFG_CORE_STACK_PROTECTOR) || defined(CFG_WITH_STACK_CANARIES)
-/* Generate random stack canary value on boot up */
-__weak void plat_get_random_stack_canaries(void *buf, size_t ncan, size_t size)
-{
-	TEE_Result ret = TEE_ERROR_GENERIC;
-	size_t i = 0;
-
-	assert(buf && ncan && size);
-
-	/*
-	 * With virtualization the RNG is not initialized in Nexus core.
-	 * Need to override with platform specific implementation.
-	 */
-	if (IS_ENABLED(CFG_NS_VIRTUALIZATION)) {
-		IMSG("WARNING: Using fixed value for stack canary");
-		memset(buf, 0xab, ncan * size);
-		goto out;
-	}
-
-	ret = crypto_rng_read(buf, ncan * size);
-	if (ret != TEE_SUCCESS)
-		panic("Failed to generate random stack canary");
-
-out:
-	/* Leave null byte in canary to prevent string base exploit */
-	for (i = 0; i < ncan; i++)
-		*((uint8_t *)buf + size * i) = 0;
-}
-#endif /* _CFG_CORE_STACK_PROTECTOR || CFG_WITH_STACK_CANARIES */
 
 /*
  * This function is called as a guard after each smc call which is not
@@ -185,6 +166,59 @@ static void init_vfp_nsec(void)
 	write_nsacr(read_nsacr() | NSACR_CP10 | NSACR_CP11);
 }
 #endif
+
+static void check_crypto_extensions(void)
+{
+	bool ce_supported = true;
+
+	if (!feat_aes_implemented() &&
+	    IS_ENABLED(CFG_CRYPTO_AES_ARM_CE)) {
+		EMSG("AES instructions are not supported");
+		ce_supported = false;
+	}
+
+	if (!feat_sha1_implemented() &&
+	    IS_ENABLED(CFG_CRYPTO_SHA1_ARM_CE)) {
+		EMSG("SHA1 instructions are not supported");
+		ce_supported = false;
+	}
+
+	if (!feat_sha256_implemented() &&
+	    IS_ENABLED(CFG_CRYPTO_SHA256_ARM_CE)) {
+		EMSG("SHA256 instructions are not supported");
+		ce_supported = false;
+	}
+
+	/* Check aarch64 specific instructions */
+	if (IS_ENABLED(CFG_ARM64_core)) {
+		if (!feat_sha512_implemented() &&
+		    IS_ENABLED(CFG_CRYPTO_SHA512_ARM_CE)) {
+			EMSG("SHA512 instructions are not supported");
+			ce_supported = false;
+		}
+
+		if (!feat_sha3_implemented() &&
+		    IS_ENABLED(CFG_CRYPTO_SHA3_ARM_CE)) {
+			EMSG("SHA3 instructions are not supported");
+			ce_supported = false;
+		}
+
+		if (!feat_sm3_implemented() &&
+		    IS_ENABLED(CFG_CRYPTO_SM3_ARM_CE)) {
+			EMSG("SM3 instructions are not supported");
+			ce_supported = false;
+		}
+
+		if (!feat_sm4_implemented() &&
+		    IS_ENABLED(CFG_CRYPTO_SM4_ARM_CE)) {
+			EMSG("SM4 instructions are not supported");
+			ce_supported = false;
+		}
+	}
+
+	if (!ce_supported)
+		panic("HW doesn't support CE instructions");
+}
 
 #if defined(CFG_WITH_VFP)
 
@@ -287,20 +321,24 @@ static void init_asan(void)
 	 * Assign area covered by the shadow area, everything from start up
 	 * to the beginning of the shadow area.
 	 */
-	asan_set_shadowed((void *)TEE_LOAD_ADDR, &__asan_shadow_start);
+	asan_add_shadowed((void *)TEE_LOAD_ADDR, &__asan_shadow_start,
+			  ASAN_REG_NO_TYPE);
 
 	/*
 	 * Add access to areas that aren't opened automatically by a
 	 * constructor.
 	 */
+	boot_mem_init_asan();
 	asan_tag_access(&__ctor_list, &__ctor_end);
 	asan_tag_access(__rodata_start, __rodata_end);
 #ifdef CFG_WITH_PAGER
 	asan_tag_access(__pageable_start, __pageable_end);
 #endif /*CFG_WITH_PAGER*/
 	asan_tag_access(__nozi_start, __nozi_end);
+#ifdef ARM32
 	asan_tag_access(__exidx_start, __exidx_end);
 	asan_tag_access(__extab_start, __extab_end);
+#endif
 
 	init_run_constructors();
 
@@ -317,50 +355,42 @@ static void init_asan(void)
 /* Called from entry_a64.S only when MEMTAG is configured */
 void boot_init_memtag(void)
 {
-	paddr_t base = 0;
-	paddr_size_t size = 0;
-
 	memtag_init_ops(feat_mte_implemented());
-	core_mmu_get_secure_memory(&base, &size);
-	memtag_set_tags((void *)(vaddr_t)base, size, 0);
+}
+
+static TEE_Result mmap_clear_memtag(struct tee_mmap_region *map,
+				    void *ptr __unused)
+{
+	switch (map->type) {
+	case MEM_AREA_NEX_RAM_RO:
+	case MEM_AREA_SEC_RAM_OVERALL:
+		DMSG("Clearing tags for VA %#"PRIxVA"..%#"PRIxVA,
+		     map->va, map->va + map->size - 1);
+		memtag_set_tags((void *)map->va, map->size, 0);
+		break;
+	default:
+		break;
+	}
+
+	return TEE_SUCCESS;
+}
+
+/* Called from entry_a64.S only when MEMTAG is configured */
+void boot_clear_memtag(void)
+{
+	core_mmu_for_each_map(NULL, mmap_clear_memtag);
 }
 #endif
 
 #ifdef CFG_WITH_PAGER
 
 #ifdef CFG_CORE_SANITIZE_KADDRESS
-static void carve_out_asan_mem(tee_mm_pool_t *pool)
+static void carve_out_asan_mem(void)
 {
-	const size_t s = pool->hi - pool->lo;
-	tee_mm_entry_t *mm;
-	paddr_t apa = ASAN_MAP_PA;
-	size_t asz = ASAN_MAP_SZ;
-
-	if (core_is_buffer_outside(apa, asz, pool->lo, s))
-		return;
-
-	/* Reserve the shadow area */
-	if (!core_is_buffer_inside(apa, asz, pool->lo, s)) {
-		if (apa < pool->lo) {
-			/*
-			 * ASAN buffer is overlapping with the beginning of
-			 * the pool.
-			 */
-			asz -= pool->lo - apa;
-			apa = pool->lo;
-		} else {
-			/*
-			 * ASAN buffer is overlapping with the end of the
-			 * pool.
-			 */
-			asz = pool->hi - apa;
-		}
-	}
-	mm = tee_mm_alloc2(pool, apa, asz);
-	assert(mm);
+	nex_phys_mem_partial_carve_out(ASAN_MAP_PA, ASAN_MAP_SZ);
 }
 #else
-static void carve_out_asan_mem(tee_mm_pool_t *pool __unused)
+static void carve_out_asan_mem(void)
 {
 }
 #endif
@@ -374,7 +404,7 @@ static void print_pager_pool_size(void)
 		stats.npages_all * SMALL_PAGE_SIZE / 1024);
 }
 
-static void init_vcore(tee_mm_pool_t *mm_vcore)
+static void init_virt_pool(tee_mm_pool_t *virt_pool)
 {
 	const vaddr_t begin = VCORE_START_VA;
 	size_t size = TEE_RAM_VA_SIZE;
@@ -385,9 +415,9 @@ static void init_vcore(tee_mm_pool_t *mm_vcore)
 		size = ASAN_MAP_PA - begin;
 #endif
 
-	if (!tee_mm_init(mm_vcore, begin, size, SMALL_PAGE_SHIFT,
+	if (!tee_mm_init(virt_pool, begin, size, SMALL_PAGE_SHIFT,
 			 TEE_MM_POOL_NO_FLAGS))
-		panic("tee_mm_vcore init failed");
+		panic("core_virt_mem_pool init failed");
 }
 
 /*
@@ -443,7 +473,7 @@ static struct fobj *ro_paged_alloc(tee_mm_entry_t *mm, void *hashes,
 #endif
 }
 
-static void init_runtime(unsigned long pageable_part)
+static void init_pager_runtime(unsigned long pageable_part)
 {
 	size_t n;
 	size_t init_size = (size_t)(__init_end - __init_start);
@@ -468,12 +498,6 @@ static void init_runtime(unsigned long pageable_part)
 
 	tmp_hashes = __init_end + embdata->hashes_offset;
 
-	init_asan();
-
-	/* Add heap2 first as heap1 may be too small as initial bget pool */
-	malloc_add_pool(__heap2_start, __heap2_end - __heap2_start);
-	malloc_add_pool(__heap1_start, __heap1_end - __heap1_start);
-
 	/*
 	 * This needs to be initialized early to support address lookup
 	 * in MEM_AREA_TEE_RAM
@@ -487,17 +511,17 @@ static void init_runtime(unsigned long pageable_part)
 	asan_memcpy_unchecked(hashes, tmp_hashes, hash_size);
 
 	/*
-	 * Need tee_mm_sec_ddr initialized to be able to allocate secure
-	 * DDR below.
+	 * The pager is about the be enabled below, eventual temporary boot
+	 * memory allocation must be removed now.
 	 */
-	core_mmu_init_ta_ram();
+	boot_mem_release_tmp_alloc();
 
-	carve_out_asan_mem(&tee_mm_sec_ddr);
+	carve_out_asan_mem();
 
-	mm = tee_mm_alloc(&tee_mm_sec_ddr, pageable_size);
+	mm = nex_phys_mem_ta_alloc(pageable_size);
 	assert(mm);
-	paged_store = phys_to_virt(tee_mm_get_smem(mm), MEM_AREA_TA_RAM,
-				   pageable_size);
+	paged_store = phys_to_virt(tee_mm_get_smem(mm),
+				   MEM_AREA_SEC_RAM_OVERALL, pageable_size);
 	/*
 	 * Load pageable part in the dedicated allocated area:
 	 * - Move pageable non-init part into pageable area. Note bootloader
@@ -542,7 +566,7 @@ static void init_runtime(unsigned long pageable_part)
 	 * Initialize the virtual memory pool used for main_mmu_l2_ttb which
 	 * is supplied to tee_pager_init() below.
 	 */
-	init_vcore(&tee_mm_vcore);
+	init_virt_pool(&core_virt_mem_pool);
 
 	/*
 	 * Assign alias area for pager end of the small page block the rest
@@ -550,9 +574,9 @@ static void init_runtime(unsigned long pageable_part)
 	 * we're guaranteed to not need more than the physical amount of
 	 * TZSRAM.
 	 */
-	mm = tee_mm_alloc2(&tee_mm_vcore,
-			   (vaddr_t)tee_mm_vcore.lo +
-			   tee_mm_vcore.size - TZSRAM_SIZE,
+	mm = tee_mm_alloc2(&core_virt_mem_pool,
+			   (vaddr_t)core_virt_mem_pool.lo +
+			   core_virt_mem_pool.size - TZSRAM_SIZE,
 			   TZSRAM_SIZE);
 	assert(mm);
 	tee_pager_set_alias_area(mm);
@@ -561,7 +585,7 @@ static void init_runtime(unsigned long pageable_part)
 	 * Claim virtual memory which isn't paged.
 	 * Linear memory (flat map core memory) ends there.
 	 */
-	mm = tee_mm_alloc2(&tee_mm_vcore, VCORE_UNPG_RX_PA,
+	mm = tee_mm_alloc2(&core_virt_mem_pool, VCORE_UNPG_RX_PA,
 			   (vaddr_t)(__pageable_start - VCORE_UNPG_RX_PA));
 	assert(mm);
 
@@ -569,7 +593,7 @@ static void init_runtime(unsigned long pageable_part)
 	 * Allocate virtual memory for the pageable area and let the pager
 	 * take charge of all the pages already assigned to that memory.
 	 */
-	mm = tee_mm_alloc2(&tee_mm_vcore, (vaddr_t)__pageable_start,
+	mm = tee_mm_alloc2(&core_virt_mem_pool, (vaddr_t)__pageable_start,
 			   pageable_size);
 	assert(mm);
 	fobj = ro_paged_alloc(mm, hashes, paged_store);
@@ -592,33 +616,16 @@ static void init_runtime(unsigned long pageable_part)
 	 * This setup may happen when a the secure bootloader runs in TZRAM
 	 * and its memory can be reused by OP-TEE once boot stages complete.
 	 */
-	tee_pager_add_pages(tee_mm_vcore.lo,
-			(VCORE_UNPG_RX_PA - tee_mm_vcore.lo) / SMALL_PAGE_SIZE,
-			true);
+	tee_pager_add_pages(core_virt_mem_pool.lo,
+			    (VCORE_UNPG_RX_PA - core_virt_mem_pool.lo) /
+				SMALL_PAGE_SIZE,
+			    true);
 
 	print_pager_pool_size();
 }
-#else
-
-static void init_runtime(unsigned long pageable_part __unused)
+#else /*!CFG_WITH_PAGER*/
+static void init_pager_runtime(unsigned long pageable_part __unused)
 {
-	init_asan();
-
-	/*
-	 * By default whole OP-TEE uses malloc, so we need to initialize
-	 * it early. But, when virtualization is enabled, malloc is used
-	 * only by TEE runtime, so malloc should be initialized later, for
-	 * every virtual partition separately. Core code uses nex_malloc
-	 * instead.
-	 */
-#ifdef CFG_NS_VIRTUALIZATION
-	nex_malloc_add_pool(__nex_heap_start, __nex_heap_end -
-					      __nex_heap_start);
-#else
-	malloc_add_pool(__heap1_start, __heap1_end - __heap1_start);
-#endif
-
-	IMSG_RAW("\n");
 }
 #endif
 
@@ -673,7 +680,8 @@ static int add_optee_dt_node(struct dt_descriptor *dt)
 		uint32_t val[3] = { };
 
 		/* PPI are visible only in current CPU cluster */
-		static_assert(!CFG_CORE_ASYNC_NOTIF_GIC_INTID ||
+		static_assert(IS_ENABLED(CFG_CORE_FFA) ||
+			      !CFG_CORE_ASYNC_NOTIF_GIC_INTID ||
 			      (CFG_CORE_ASYNC_NOTIF_GIC_INTID >=
 			       GIC_SPI_BASE) ||
 			      ((CFG_TEE_CORE_NB_CORE <= 8) &&
@@ -799,133 +807,6 @@ static int config_psci(struct dt_descriptor *dt __unused)
 }
 #endif /*CFG_PSCI_ARM32*/
 
-#ifdef CFG_CORE_DYN_SHM
-static uint64_t get_dt_val_and_advance(const void *data, size_t *offs,
-				       uint32_t cell_size)
-{
-	uint64_t rv = 0;
-
-	if (cell_size == 1) {
-		uint32_t v;
-
-		memcpy(&v, (const uint8_t *)data + *offs, sizeof(v));
-		*offs += sizeof(v);
-		rv = fdt32_to_cpu(v);
-	} else {
-		uint64_t v;
-
-		memcpy(&v, (const uint8_t *)data + *offs, sizeof(v));
-		*offs += sizeof(v);
-		rv = fdt64_to_cpu(v);
-	}
-
-	return rv;
-}
-
-/*
- * Find all non-secure memory from DT. Memory marked inaccessible by Secure
- * World is ignored since it could not be mapped to be used as dynamic shared
- * memory.
- */
-static int get_nsec_memory_helper(void *fdt, struct core_mmu_phys_mem *mem)
-{
-	const uint8_t *prop = NULL;
-	uint64_t a = 0;
-	uint64_t l = 0;
-	size_t prop_offs = 0;
-	size_t prop_len = 0;
-	int elems_total = 0;
-	int addr_size = 0;
-	int len_size = 0;
-	int offs = 0;
-	size_t n = 0;
-	int len = 0;
-
-	addr_size = fdt_address_cells(fdt, 0);
-	if (addr_size < 0)
-		return 0;
-
-	len_size = fdt_size_cells(fdt, 0);
-	if (len_size < 0)
-		return 0;
-
-	while (true) {
-		offs = fdt_node_offset_by_prop_value(fdt, offs, "device_type",
-						     "memory",
-						     sizeof("memory"));
-		if (offs < 0)
-			break;
-
-		if (fdt_get_status(fdt, offs) != (DT_STATUS_OK_NSEC |
-						   DT_STATUS_OK_SEC))
-			continue;
-
-		prop = fdt_getprop(fdt, offs, "reg", &len);
-		if (!prop)
-			continue;
-
-		prop_len = len;
-		for (n = 0, prop_offs = 0; prop_offs < prop_len; n++) {
-			a = get_dt_val_and_advance(prop, &prop_offs, addr_size);
-			if (prop_offs >= prop_len) {
-				n--;
-				break;
-			}
-
-			l = get_dt_val_and_advance(prop, &prop_offs, len_size);
-			if (mem) {
-				mem->type = MEM_AREA_DDR_OVERALL;
-				mem->addr = a;
-				mem->size = l;
-				mem++;
-			}
-		}
-
-		elems_total += n;
-	}
-
-	return elems_total;
-}
-
-static struct core_mmu_phys_mem *get_nsec_memory(void *fdt, size_t *nelems)
-{
-	struct core_mmu_phys_mem *mem = NULL;
-	int elems_total = 0;
-
-	elems_total = get_nsec_memory_helper(fdt, NULL);
-	if (elems_total <= 0)
-		return NULL;
-
-	mem = nex_calloc(elems_total, sizeof(*mem));
-	if (!mem)
-		panic();
-
-	elems_total = get_nsec_memory_helper(fdt, mem);
-	assert(elems_total > 0);
-
-	*nelems = elems_total;
-
-	return mem;
-}
-#endif /*CFG_CORE_DYN_SHM*/
-
-#ifdef CFG_CORE_RESERVED_SHM
-static int mark_static_shm_as_reserved(struct dt_descriptor *dt)
-{
-	vaddr_t shm_start;
-	vaddr_t shm_end;
-
-	core_mmu_get_mem_by_type(MEM_AREA_NSEC_SHM, &shm_start, &shm_end);
-	if (shm_start != shm_end)
-		return add_res_mem_dt_node(dt, "optee_shm",
-					   virt_to_phys((void *)shm_start),
-					   shm_end - shm_start);
-
-	DMSG("No SHM configured");
-	return -1;
-}
-#endif /*CFG_CORE_RESERVED_SHM*/
-
 static int mark_tzdram_as_reserved(struct dt_descriptor *dt)
 {
 	return add_res_mem_dt_node(dt, "optee_core", CFG_TZDRAM_START,
@@ -957,139 +838,18 @@ static void update_external_dt(void)
 static void update_external_dt(void)
 {
 }
-
-#ifdef CFG_CORE_DYN_SHM
-static struct core_mmu_phys_mem *get_nsec_memory(void *fdt __unused,
-						 size_t *nelems __unused)
-{
-	return NULL;
-}
-#endif /*CFG_CORE_DYN_SHM*/
 #endif /*!CFG_DT*/
-
-#if defined(CFG_CORE_SEL1_SPMC) && defined(CFG_DT)
-void *get_tos_fw_config_dt(void)
-{
-	if (!IS_ENABLED(CFG_MAP_EXT_DT_SECURE))
-		return NULL;
-
-	assert(cpu_mmu_enabled());
-
-	return tos_fw_config_dt.blob;
-}
-
-static void init_tos_fw_config_dt(unsigned long pa)
-{
-	struct dt_descriptor *dt = &tos_fw_config_dt;
-	void *fdt = NULL;
-	int ret = 0;
-
-	if (!IS_ENABLED(CFG_MAP_EXT_DT_SECURE))
-		return;
-
-	if (!pa)
-		panic("No TOS_FW_CONFIG DT found");
-
-	fdt = core_mmu_add_mapping(MEM_AREA_EXT_DT, pa, CFG_DTB_MAX_SIZE);
-	if (!fdt)
-		panic("Failed to map TOS_FW_CONFIG DT");
-
-	dt->blob = fdt;
-
-	ret = fdt_open_into(fdt, fdt, CFG_DTB_MAX_SIZE);
-	if (ret < 0) {
-		EMSG("Invalid Device Tree at %#lx: error %d", pa, ret);
-		panic();
-	}
-
-	IMSG("TOS_FW_CONFIG DT found");
-}
-#else
-void *get_tos_fw_config_dt(void)
-{
-	return NULL;
-}
-
-static void init_tos_fw_config_dt(unsigned long pa __unused)
-{
-}
-#endif /*CFG_CORE_SEL1_SPMC && CFG_DT*/
-
-#ifdef CFG_CORE_DYN_SHM
-static void discover_nsec_memory(void)
-{
-	struct core_mmu_phys_mem *mem;
-	const struct core_mmu_phys_mem *mem_begin = NULL;
-	const struct core_mmu_phys_mem *mem_end = NULL;
-	size_t nelems;
-	void *fdt = get_external_dt();
-
-	if (fdt) {
-		mem = get_nsec_memory(fdt, &nelems);
-		if (mem) {
-			core_mmu_set_discovered_nsec_ddr(mem, nelems);
-			return;
-		}
-
-		DMSG("No non-secure memory found in FDT");
-	}
-
-	mem_begin = phys_ddr_overall_begin;
-	mem_end = phys_ddr_overall_end;
-	nelems = mem_end - mem_begin;
-	if (nelems) {
-		/*
-		 * Platform cannot use both register_ddr() and the now
-		 * deprecated register_dynamic_shm().
-		 */
-		assert(phys_ddr_overall_compat_begin ==
-		       phys_ddr_overall_compat_end);
-	} else {
-		mem_begin = phys_ddr_overall_compat_begin;
-		mem_end = phys_ddr_overall_compat_end;
-		nelems = mem_end - mem_begin;
-		if (!nelems)
-			return;
-		DMSG("Warning register_dynamic_shm() is deprecated, please use register_ddr() instead");
-	}
-
-	mem = nex_calloc(nelems, sizeof(*mem));
-	if (!mem)
-		panic();
-
-	memcpy(mem, phys_ddr_overall_begin, sizeof(*mem) * nelems);
-	core_mmu_set_discovered_nsec_ddr(mem, nelems);
-}
-#else /*CFG_CORE_DYN_SHM*/
-static void discover_nsec_memory(void)
-{
-}
-#endif /*!CFG_CORE_DYN_SHM*/
-
-#ifdef CFG_NS_VIRTUALIZATION
-static TEE_Result virt_init_heap(void)
-{
-	/* We need to initialize pool for every virtual guest partition */
-	malloc_add_pool(__heap1_start, __heap1_end - __heap1_start);
-
-	return TEE_SUCCESS;
-}
-preinit_early(virt_init_heap);
-#endif
 
 void init_tee_runtime(void)
 {
-#ifndef CFG_WITH_PAGER
-	/* Pager initializes TA RAM early */
-	core_mmu_init_ta_ram();
-#endif
 	/*
 	 * With virtualization we call this function when creating the
 	 * OP-TEE partition instead.
 	 */
 	if (!IS_ENABLED(CFG_NS_VIRTUALIZATION))
 		call_preinitcalls();
-	call_initcalls();
+	call_early_initcalls();
+	call_service_initcalls();
 
 	/*
 	 * These two functions uses crypto_rng_read() to initialize the
@@ -1110,9 +870,20 @@ void init_tee_runtime(void)
 		thread_update_canaries();
 }
 
-static void init_primary(unsigned long pageable_part, unsigned long nsec_entry)
+static bool add_padding_to_pool(vaddr_t va, size_t len, void *ptr __unused)
 {
-	thread_init_core_local_stacks();
+#ifdef CFG_NS_VIRTUALIZATION
+	nex_malloc_add_pool((void *)va, len);
+#else
+	malloc_add_pool((void *)va, len);
+#endif
+	return true;
+}
+
+static void init_primary(unsigned long pageable_part)
+{
+	vaddr_t va = 0;
+
 	/*
 	 * Mask asynchronous exceptions before switch to the thread vector
 	 * as the thread handler requires those to be masked while
@@ -1123,29 +894,81 @@ static void init_primary(unsigned long pageable_part, unsigned long nsec_entry)
 	thread_set_exceptions(THREAD_EXCP_ALL);
 	primary_save_cntfrq();
 	init_vfp_sec();
-	/*
-	 * Pager: init_runtime() calls thread_kernel_enable_vfp() so we must
-	 * set a current thread right now to avoid a chicken-and-egg problem
-	 * (thread_init_boot_thread() sets the current thread but needs
-	 * things set by init_runtime()).
-	 */
-	thread_get_core_local()->curr_thread = 0;
-	init_runtime(pageable_part);
 
-	if (IS_ENABLED(CFG_NS_VIRTUALIZATION)) {
-		/*
-		 * Virtualization: We can't initialize threads right now because
-		 * threads belong to "tee" part and will be initialized
-		 * separately per each new virtual guest. So, we'll clear
-		 * "curr_thread" and call it done.
-		 */
-		thread_get_core_local()->curr_thread = -1;
-	} else {
-		thread_init_boot_thread();
+	if (IS_ENABLED(CFG_CRYPTO_WITH_CE))
+		check_crypto_extensions();
+
+	init_asan();
+
+	/*
+	 * By default whole OP-TEE uses malloc, so we need to initialize
+	 * it early. But, when virtualization is enabled, malloc is used
+	 * only by TEE runtime, so malloc should be initialized later, for
+	 * every virtual partition separately. Core code uses nex_malloc
+	 * instead.
+	 */
+#ifdef CFG_WITH_PAGER
+	/* Add heap2 first as heap1 may be too small as initial bget pool */
+	malloc_add_pool(__heap2_start, __heap2_end - __heap2_start);
+#endif
+#ifdef CFG_NS_VIRTUALIZATION
+	nex_malloc_add_pool(__nex_heap_start, __nex_heap_end -
+					      __nex_heap_start);
+#else
+	malloc_add_pool(__heap1_start, __heap1_end - __heap1_start);
+#endif
+	IMSG_RAW("\n");
+	if (IS_ENABLED(CFG_DYN_CONFIG)) {
+		size_t sz = sizeof(struct thread_core_local) *
+			    CFG_TEE_CORE_NB_CORE;
+		void *p = boot_mem_alloc(sz, alignof(void *) * 2);
+
+#ifdef CFG_NS_VIRTUALIZATION
+		nex_malloc_add_pool(p, sz);
+#else
+		malloc_add_pool(p, sz);
+#endif
 	}
-	thread_init_primary();
+
+	core_mmu_save_mem_map();
+	core_mmu_init_phys_mem();
+	boot_mem_foreach_padding(add_padding_to_pool, NULL);
+	va = boot_mem_release_unused();
+	if (!IS_ENABLED(CFG_WITH_PAGER)) {
+		/*
+		 * We must update boot_cached_mem_end to reflect the memory
+		 * just unmapped by boot_mem_release_unused().
+		 */
+		assert(va && va <= boot_cached_mem_end);
+		boot_cached_mem_end = va;
+	}
+
+	if (IS_ENABLED(CFG_DYN_CONFIG)) {
+		/*
+		 * This is needed to enable virt_page_alloc() now that
+		 * boot_mem_alloc() can't be used any longer.
+		 */
+		if (IS_ENABLED(CFG_NS_VIRTUALIZATION))
+			nex_page_alloc_init();
+		else
+			page_alloc_init();
+	}
+
+	if (IS_ENABLED(CFG_WITH_PAGER)) {
+		/*
+		 * Pager: init_runtime() calls thread_kernel_enable_vfp()
+		 * so we must set a current thread right now to avoid a
+		 * chicken-and-egg problem (thread_init_boot_thread() sets
+		 * the current thread but needs things set by
+		 * init_runtime()).
+		 */
+		thread_get_core_local()->curr_thread = 0;
+		init_pager_runtime(pageable_part);
+	}
+
+	/* Initialize canaries around the stacks */
+	thread_init_canaries();
 	thread_init_per_cpu();
-	init_sec_mon(nsec_entry);
 }
 
 static bool cpu_nmfi_enabled(void)
@@ -1162,13 +985,39 @@ static bool cpu_nmfi_enabled(void)
  * Note: this function is weak just to make it possible to exclude it from
  * the unpaged area.
  */
-void __weak boot_init_primary_late(unsigned long fdt,
-				   unsigned long tos_fw_config)
+void __weak boot_init_primary_late(unsigned long fdt __unused,
+				   unsigned long manifest __unused)
 {
-	init_external_dt(fdt);
-	init_tos_fw_config_dt(tos_fw_config);
-#ifdef CFG_CORE_SEL1_SPMC
-	tpm_map_log_area(get_tos_fw_config_dt());
+	size_t fdt_size = CFG_DTB_MAX_SIZE;
+
+	if (IS_ENABLED(CFG_TRANSFER_LIST) && mapped_tl) {
+		struct transfer_list_entry *tl_e = NULL;
+
+		tl_e = transfer_list_find(mapped_tl, TL_TAG_FDT);
+		if (tl_e) {
+			/*
+			 * Expand the data size of the DTB entry to the maximum
+			 * allocable mapped memory to reserve sufficient space
+			 * for inserting new nodes, avoid potentially corrupting
+			 * next entries.
+			 */
+			uint32_t dtb_max_sz = mapped_tl->max_size -
+					      mapped_tl->size + tl_e->data_size;
+
+			if (!transfer_list_set_data_size(mapped_tl, tl_e,
+							 dtb_max_sz)) {
+				EMSG("Failed to extend DTB size to %#"PRIx32,
+				     dtb_max_sz);
+				panic();
+			}
+			fdt_size = tl_e->data_size;
+		}
+	}
+
+	init_external_dt(boot_arg_fdt, fdt_size);
+	reinit_manifest_dt();
+#ifdef CFG_CORE_FFA
+	tpm_map_log_area(get_manifest_dt());
 #else
 	tpm_map_log_area(get_external_dt());
 #endif
@@ -1176,8 +1025,26 @@ void __weak boot_init_primary_late(unsigned long fdt,
 	update_external_dt();
 	configure_console_from_dt();
 
+	if (IS_ENABLED(CFG_NS_VIRTUALIZATION)) {
+		/*
+		 * Virtualization: We can't initialize threads right now because
+		 * threads belong to "tee" part and will be initialized
+		 * separately per each new virtual guest. So, we'll clear
+		 * "curr_thread" and call it done.
+		 */
+		thread_get_core_local()->curr_thread = -1;
+	} else {
+		thread_init_threads(CFG_NUM_THREADS);
+		thread_init_boot_thread();
+	}
+	thread_init_thread_core_local(CFG_TEE_CORE_NB_CORE);
+}
+
+void __weak boot_init_primary_runtime(void)
+{
+	thread_init_primary();
 	IMSG("OP-TEE version: %s", core_v_str);
-	if (IS_ENABLED(CFG_WARN_INSECURE)) {
+	if (IS_ENABLED(CFG_INSECURE)) {
 		IMSG("WARNING: This OP-TEE configuration might be insecure!");
 		IMSG("WARNING: Please check https://optee.readthedocs.io/en/latest/architecture/porting_guidelines.html");
 	}
@@ -1185,6 +1052,10 @@ void __weak boot_init_primary_late(unsigned long fdt,
 #ifdef CFG_CORE_ASLR
 	DMSG("Executing at offset %#lx with virtual load address %#"PRIxVA,
 	     (unsigned long)boot_mmu_config.map_offset, VCORE_START_VA);
+#endif
+#ifdef CFG_NS_VIRTUALIZATION
+	DMSG("NS-virtualization enabled, supporting %u guests",
+	     CFG_VIRT_GUEST_COUNT);
 #endif
 	if (IS_ENABLED(CFG_MEMTAG))
 		DMSG("Memory tagging %s",
@@ -1201,17 +1072,39 @@ void __weak boot_init_primary_late(unsigned long fdt,
 
 	boot_primary_init_intc();
 	init_vfp_nsec();
-	if (IS_ENABLED(CFG_NS_VIRTUALIZATION)) {
-		IMSG("Initializing virtualization support");
-		core_mmu_init_virtualization();
-	} else {
+	if (!IS_ENABLED(CFG_NS_VIRTUALIZATION)) {
+		/*
+		 * Unmask native interrupts during driver initcalls.
+		 *
+		 * NS-virtualization still uses the temporary stack also
+		 * used for exception handling so it must still have native
+		 * interrupts masked.
+		 */
+		thread_set_exceptions(thread_get_exceptions() &
+				      ~THREAD_EXCP_NATIVE_INTR);
 		init_tee_runtime();
 	}
-	call_finalcalls();
-	IMSG("Primary CPU switching to normal world boot");
+
+	if (!IS_ENABLED(CFG_WITH_PAGER))
+		boot_mem_release_tmp_alloc();
 }
 
-static void init_secondary_helper(unsigned long nsec_entry)
+void __weak boot_init_primary_final(void)
+{
+	if (!IS_ENABLED(CFG_NS_VIRTUALIZATION))
+		call_driver_initcalls();
+
+	call_finalcalls();
+
+	IMSG("Primary CPU switching to normal world boot");
+
+	/* Mask native interrupts before switching to the normal world */
+	if (!IS_ENABLED(CFG_NS_VIRTUALIZATION))
+		thread_set_exceptions(thread_get_exceptions() |
+				      THREAD_EXCP_NATIVE_INTR);
+}
+
+static void init_secondary_helper(void)
 {
 	IMSG("Secondary CPU %zu initializing", get_core_pos());
 
@@ -1226,7 +1119,6 @@ static void init_secondary_helper(unsigned long nsec_entry)
 
 	secondary_init_cntfrq();
 	thread_init_per_cpu();
-	init_sec_mon(nsec_entry);
 	boot_secondary_init_intc();
 	init_vfp_sec();
 	init_vfp_nsec();
@@ -1238,29 +1130,67 @@ static void init_secondary_helper(unsigned long nsec_entry)
  * Note: this function is weak just to make it possible to exclude it from
  * the unpaged area so that it lies in the init area.
  */
-void __weak boot_init_primary_early(unsigned long pageable_part,
-				    unsigned long nsec_entry __maybe_unused)
+void __weak boot_init_primary_early(void)
 {
-	unsigned long e = PADDR_INVALID;
+	unsigned long pageable_part = 0;
+	struct transfer_list_entry *tl_e = NULL;
 
-#if !defined(CFG_WITH_ARM_TRUSTED_FW)
-	e = nsec_entry;
-#endif
+	if (IS_ENABLED(CFG_TRANSFER_LIST) && boot_arg_transfer_list) {
+		/* map and save the TL */
+		mapped_tl = transfer_list_map(boot_arg_transfer_list);
+		if (!mapped_tl)
+			panic("Failed to map transfer list");
 
-	init_primary(pageable_part, e);
+		transfer_list_dump(mapped_tl);
+		tl_e = transfer_list_find(mapped_tl, TL_TAG_OPTEE_PAGABLE_PART);
+	}
+
+	if (IS_ENABLED(CFG_WITH_PAGER)) {
+		if (IS_ENABLED(CFG_TRANSFER_LIST) && tl_e)
+			pageable_part =
+				get_le64(transfer_list_entry_data(tl_e));
+		else
+			pageable_part = boot_arg_pageable_part;
+	}
+
+	init_primary(pageable_part);
+}
+
+static void boot_save_transfer_list(unsigned long zero_reg,
+				    unsigned long transfer_list,
+				    unsigned long fdt)
+{
+	struct transfer_list_header *tl = (void *)transfer_list;
+	struct transfer_list_entry *tl_e = NULL;
+
+	if (zero_reg != 0)
+		panic("Incorrect transfer list register convention");
+
+	if (!IS_ALIGNED_WITH_TYPE(transfer_list, struct transfer_list_header) ||
+	    !IS_ALIGNED(transfer_list, TL_ALIGNMENT_FROM_ORDER(tl->alignment)))
+		panic("Transfer list base address is not aligned");
+
+	if (transfer_list_check_header(tl) == TL_OPS_NONE)
+		panic("Invalid transfer list");
+
+	tl_e = transfer_list_find(tl, TL_TAG_FDT);
+	if (fdt != (unsigned long)transfer_list_entry_data(tl_e))
+		panic("DT does not match to the DT entry of the TL");
+
+	boot_arg_transfer_list = transfer_list;
 }
 
 #if defined(CFG_WITH_ARM_TRUSTED_FW)
 unsigned long boot_cpu_on_handler(unsigned long a0 __maybe_unused,
 				  unsigned long a1 __unused)
 {
-	init_secondary_helper(PADDR_INVALID);
+	init_secondary_helper();
 	return 0;
 }
 #else
-void boot_init_secondary(unsigned long nsec_entry)
+void boot_init_secondary(unsigned long nsec_entry __unused)
 {
-	init_secondary_helper(nsec_entry);
+	init_secondary_helper();
 }
 #endif
 
@@ -1307,12 +1237,16 @@ struct ns_entry_context *boot_core_hpen(void)
 
 #if defined(CFG_CORE_ASLR)
 #if defined(CFG_DT)
-unsigned long __weak get_aslr_seed(void *fdt)
+unsigned long __weak get_aslr_seed(void)
 {
+	void *fdt = NULL;
 	int rc = 0;
 	const uint64_t *seed = NULL;
 	int offs = 0;
 	int len = 0;
+
+	if (!IS_ENABLED(CFG_CORE_SEL2_SPMC))
+		fdt = (void *)boot_arg_fdt;
 
 	if (!fdt) {
 		DMSG("No fdt");
@@ -1336,14 +1270,14 @@ unsigned long __weak get_aslr_seed(void *fdt)
 		goto err;
 	}
 
-	return fdt64_to_cpu(*seed);
+	return fdt64_to_cpu(fdt64_ld(seed));
 
 err:
 	/* Try platform implementation */
 	return plat_get_aslr_seed();
 }
 #else /*!CFG_DT*/
-unsigned long __weak get_aslr_seed(void *fdt __unused)
+unsigned long __weak get_aslr_seed(void)
 {
 	/* Try platform implementation */
 	return plat_get_aslr_seed();
@@ -1351,7 +1285,6 @@ unsigned long __weak get_aslr_seed(void *fdt __unused)
 #endif /*!CFG_DT*/
 #endif /*CFG_CORE_ASLR*/
 
-#if defined(CFG_CORE_SEL2_SPMC) && defined(CFG_CORE_PHYS_RELOCATABLE)
 static void *get_fdt_from_boot_info(struct ffa_boot_info_header_1_1 *hdr)
 {
 	struct ffa_boot_info_1_1 *desc = NULL;
@@ -1364,7 +1297,8 @@ static void *get_fdt_from_boot_info(struct ffa_boot_info_header_1_1 *hdr)
 		EMSG("Bad boot info signature %#"PRIx32, hdr->signature);
 		panic();
 	}
-	if (hdr->version != FFA_BOOT_INFO_VERSION) {
+	if (hdr->version != FFA_BOOT_INFO_VERSION_1_1 &&
+	    hdr->version != FFA_BOOT_INFO_VERSION_1_2) {
 		EMSG("Bad boot info version %#"PRIx32, hdr->version);
 		panic();
 	}
@@ -1400,7 +1334,8 @@ static void *get_fdt_from_boot_info(struct ffa_boot_info_header_1_1 *hdr)
 	return fdt;
 }
 
-static void get_sec_mem_from_manifest(void *fdt, paddr_t *base, size_t *size)
+static void get_sec_mem_from_manifest(void *fdt, paddr_t *base,
+				      paddr_size_t *size)
 {
 	int ret = 0;
 	uint64_t num = 0;
@@ -1427,14 +1362,150 @@ static void get_sec_mem_from_manifest(void *fdt, paddr_t *base, size_t *size)
 	*size = num;
 }
 
-void __weak boot_save_boot_info(void *boot_info)
+void __weak boot_save_args(unsigned long a0, unsigned long a1,
+			   unsigned long a2, unsigned long a3,
+			   unsigned long a4 __maybe_unused)
 {
-	void *fdt = NULL;
-	paddr_t base = 0;
-	size_t size = 0;
+	/*
+	 * Register use:
+	 *
+	 * Scenario A: Default arguments
+	 * a0   - CFG_CORE_FFA=y && CFG_CORE_SEL2_SPMC=n:
+	 *        if non-NULL holds the TOS FW config [1] address
+	 *      - CFG_CORE_FFA=y &&
+		  (CFG_CORE_SEL2_SPMC=y || CFG_CORE_EL3_SPMC=y):
+	 *        address of FF-A Boot Information Blob
+	 *      - CFG_CORE_FFA=n:
+	 *        if non-NULL holds the pagable part address
+	 * a1	- CFG_WITH_ARM_TRUSTED_FW=n (Armv7):
+	 *	  Armv7 standard bootarg #1 (kept track of in entry_a32.S)
+	 * a2   - CFG_CORE_SEL2_SPMC=n:
+	 *        if non-NULL holds the system DTB address
+	 *	- CFG_WITH_ARM_TRUSTED_FW=n (Armv7):
+	 *	  Armv7 standard bootarg #2 (system DTB address, kept track
+	 *	  of in entry_a32.S)
+	 * a3	- Not used
+	 * a4	- CFG_WITH_ARM_TRUSTED_FW=n:
+	 *	  Non-secure entry address
+	 *
+	 * [1] A TF-A concept: TOS_FW_CONFIG - Trusted OS Firmware
+	 * configuration file. Used by Trusted OS (BL32), that is, OP-TEE
+	 * here. This is also called Manifest DT, related to the Manifest DT
+	 * passed in the FF-A Boot Information Blob, but with a different
+	 * compatible string.
 
-	fdt = get_fdt_from_boot_info(boot_info);
-	get_sec_mem_from_manifest(fdt, &base, &size);
-	core_mmu_set_secure_memory(base, size);
+	 * Scenario B: FW Handoff via Transfer List
+	 * Note: FF-A and non-secure entry are not yet supported with
+	 *       Transfer List
+	 * a0	- DTB address or 0 (AArch64)
+	 *	- must be 0 (AArch32)
+	 * a1	- 1 << 32 | TRANSFER_LIST_SIGNATURE[0:31] (AArch64)
+	 *	- 1 << 24 | TRANSFER_LIST_SIGNATURE[0:23] (AArch32)
+	 * a2	- must be 0 (AArch64)
+	 *	- DTB address or 0 (AArch32)
+	 * a3	- Transfer list base address
+	 * a4	- Not used
+	 */
+
+	if (IS_ENABLED(CFG_TRANSFER_LIST)) {
+		if (IS_ENABLED(CFG_ARM64_core) &&
+		    a1 == TL_HANDOFF_X1_VALUE(TL_REG_CONVENTION_VER)) {
+			boot_save_transfer_list(a2, a3, a0);
+			boot_arg_fdt = a0;
+		} else if (IS_ENABLED(CFG_ARM32_core) &&
+			   a1 == TL_HANDOFF_R1_VALUE(TL_REG_CONVENTION_VER)) {
+			boot_save_transfer_list(a0, a3, a2);
+			boot_arg_fdt = a2;
+		}
+
+		return;
+	}
+
+	if (!IS_ENABLED(CFG_CORE_SEL2_SPMC)) {
+#if defined(CFG_DT_ADDR)
+		boot_arg_fdt = CFG_DT_ADDR;
+#else
+		boot_arg_fdt = a2;
+#endif
+	}
+
+	if (IS_ENABLED(CFG_CORE_FFA)) {
+		size_t fdt_max_size = CFG_DTB_MAX_SIZE;
+		void *fdt = NULL;
+
+		if (IS_ENABLED(CFG_CORE_SEL2_SPMC) ||
+		    IS_ENABLED(CFG_CORE_EL3_SPMC))
+			fdt = get_fdt_from_boot_info((void *)a0);
+		else
+			fdt = (void *)a0;
+		if (IS_ENABLED(CFG_CORE_SEL2_SPMC)) {
+			paddr_size_t size = 0;
+			paddr_t base = 0;
+
+			if (IS_ENABLED(CFG_CORE_PHYS_RELOCATABLE)) {
+				get_sec_mem_from_manifest(fdt, &base, &size);
+				core_mmu_set_secure_memory(base, size);
+			} else {
+				core_mmu_get_secure_memory(&base, &size);
+			}
+			assert((unsigned long)fdt >= base);
+			assert((unsigned long)fdt <= base + size);
+			assert((unsigned long)fdt < VCORE_START_VA);
+			fdt_max_size = VCORE_START_VA - (unsigned long)fdt;
+		}
+		init_manifest_dt(fdt, fdt_max_size);
+	} else {
+		if (IS_ENABLED(CFG_WITH_PAGER)) {
+#if defined(CFG_PAGEABLE_ADDR)
+			boot_arg_pageable_part = CFG_PAGEABLE_ADDR;
+#else
+			boot_arg_pageable_part = a0;
+#endif
+		}
+		if (!IS_ENABLED(CFG_WITH_ARM_TRUSTED_FW)) {
+#if defined(CFG_NS_ENTRY_ADDR)
+			boot_arg_nsec_entry = CFG_NS_ENTRY_ADDR;
+#else
+			boot_arg_nsec_entry = a4;
+#endif
+		}
+	}
 }
-#endif /*CFG_CORE_SEL2_SPMC && CFG_CORE_PHYS_RELOCATABLE*/
+
+#if defined(CFG_TRANSFER_LIST)
+static TEE_Result release_transfer_list(void)
+{
+	struct dt_descriptor *dt = get_external_dt_desc();
+
+	if (!mapped_tl)
+		return TEE_SUCCESS;
+
+	if (dt) {
+		int ret = 0;
+		struct transfer_list_entry *tl_e = NULL;
+
+		/*
+		 * Pack the DTB and update the transfer list before un-mapping
+		 */
+		ret = fdt_pack(dt->blob);
+		if (ret < 0) {
+			EMSG("Failed to pack Device Tree at 0x%" PRIxPA
+			     ": error %d", virt_to_phys(dt->blob), ret);
+			panic();
+		}
+
+		tl_e = transfer_list_find(mapped_tl, TL_TAG_FDT);
+		assert(dt->blob == transfer_list_entry_data(tl_e));
+		transfer_list_set_data_size(mapped_tl, tl_e,
+					    fdt_totalsize(dt->blob));
+		dt->blob = NULL;
+	}
+
+	transfer_list_unmap_sync(mapped_tl);
+	mapped_tl = NULL;
+
+	return TEE_SUCCESS;
+}
+
+boot_final(release_transfer_list);
+#endif

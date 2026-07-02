@@ -13,8 +13,8 @@
 			 { 0xa4, 0x9c, 0xbb, 0xd8, 0x27, 0xae, 0x86, 0xee } }
 
 /* PKCS11 trusted application version information */
-#define PKCS11_TA_VERSION_MAJOR			0
-#define PKCS11_TA_VERSION_MINOR			1
+#define PKCS11_TA_VERSION_MAJOR			1
+#define PKCS11_TA_VERSION_MINOR			0
 #define PKCS11_TA_VERSION_PATCH			0
 
 /* Attribute specific values */
@@ -1039,6 +1039,40 @@ struct pkcs11_attribute_head {
 	uint8_t data[];
 };
 
+#define PKCS11_CKA_VENDOR_DEFINED	0x80000000UL
+
+/**
+ * The PKCS11_CKF_ARRAY_ATTRIBUTE flag identifies an attribute which
+ * consists of an array of values.
+ */
+#define PKCS11_CKF_ARRAY_ATTRIBUTE	0x40000000UL
+
+/*
+ * OP-TEE's vendor specific PKCS#11 attribute allocation
+ *
+ * bit 31 - PKCS11_CKA_VENDOR_DEFINED
+ * bit 30 - PKCS11_CKF_ARRAY_ATTRIBUTE - works like in normal attributes
+ * bit 24-29 - reserved in case PKCS#11 standard starts to use them
+ * bit 16-23 - allocated for OP-TEE attribute flags
+ * bit 0-15 - allocated for attribute identifier
+ */
+
+/* OP-TEE attribute flags */
+
+/**
+ * Flags mask for checking if OP-TEE attribute flags are set.
+ */
+#define PKCS11_CKA_OPTEE_FLAGS_MASK	(PKCS11_CKA_VENDOR_DEFINED | \
+					 0x00FF0000UL)
+
+/**
+ * PKCS11_CKA_OPTEE_FLAGS_HIDDEN defines attribute that will not be exported
+ * from PKCS11 TA to its client. From client application point of view the
+ * attribute does not exist.
+ */
+#define PKCS11_CKA_OPTEE_FLAGS_HIDDEN	(PKCS11_CKA_VENDOR_DEFINED | \
+					 0x00010000UL)
+
 /*
  * Attribute identification IDs as of v2.40 excluding deprecated IDs.
  * Valid values for struct pkcs11_attribute_head::id
@@ -1110,13 +1144,12 @@ enum pkcs11_attr_id {
 	PKCS11_CKA_EC_POINT			= 0x0181,
 	PKCS11_CKA_ALWAYS_AUTHENTICATE		= 0x0202,
 	PKCS11_CKA_WRAP_WITH_TRUSTED		= 0x0210,
-	/*
-	 * The leading 4 comes from the PKCS#11 spec or:ing with
-	 * CKF_ARRAY_ATTRIBUTE = 0x40000000.
-	 */
-	PKCS11_CKA_WRAP_TEMPLATE		= 0x40000211,
-	PKCS11_CKA_UNWRAP_TEMPLATE		= 0x40000212,
-	PKCS11_CKA_DERIVE_TEMPLATE		= 0x40000213,
+	PKCS11_CKA_WRAP_TEMPLATE		= PKCS11_CKF_ARRAY_ATTRIBUTE |
+						  0x0211,
+	PKCS11_CKA_UNWRAP_TEMPLATE		= PKCS11_CKF_ARRAY_ATTRIBUTE |
+						  0x0212,
+	PKCS11_CKA_DERIVE_TEMPLATE		= PKCS11_CKF_ARRAY_ATTRIBUTE |
+						  0x0213,
 	PKCS11_CKA_OTP_FORMAT			= 0x0220,
 	PKCS11_CKA_OTP_LENGTH			= 0x0221,
 	PKCS11_CKA_OTP_TIME_INTERVAL		= 0x0222,
@@ -1151,11 +1184,21 @@ enum pkcs11_attr_id {
 	PKCS11_CKA_REQUIRED_CMS_ATTRIBUTES	= 0x0501,
 	PKCS11_CKA_DEFAULT_CMS_ATTRIBUTES	= 0x0502,
 	PKCS11_CKA_SUPPORTED_CMS_ATTRIBUTES	= 0x0503,
-	/*
-	 * The leading 4 comes from the PKCS#11 spec or:ing with
-	 * CKF_ARRAY_ATTRIBUTE = 0x40000000.
+	PKCS11_CKA_ALLOWED_MECHANISMS		= PKCS11_CKF_ARRAY_ATTRIBUTE |
+						  0x0600,
+
+	/* Vendor specific attributes */
+
+	/**
+	 * TEE Internal API requires to have EC public key information
+	 * available for private key operations. As EC private key object
+	 * should not include CKA_EC_POINT include hidden one so that it does
+	 * not need to be calculated on each operation.
 	 */
-	PKCS11_CKA_ALLOWED_MECHANISMS		= 0x40000600,
+	PKCS11_CKA_OPTEE_HIDDEN_EC_POINT = PKCS11_CKA_VENDOR_DEFINED |
+					   PKCS11_CKA_OPTEE_FLAGS_HIDDEN |
+					   0x0000,
+
 	/* Vendor extension: reserved for undefined ID (~0U) */
 	PKCS11_CKA_UNDEFINED_ID			= PKCS11_UNDEFINED_ID,
 };
@@ -1231,6 +1274,7 @@ enum pkcs11_certificate_category {
 enum pkcs11_mechanism_id {
 	PKCS11_CKM_RSA_PKCS_KEY_PAIR_GEN	= 0x00000,
 	PKCS11_CKM_RSA_PKCS			= 0x00001,
+	PKCS11_CKM_RSA_X_509			= 0x00003,
 	PKCS11_CKM_MD5_RSA_PKCS			= 0x00005,
 	PKCS11_CKM_SHA1_RSA_PKCS		= 0x00006,
 	PKCS11_CKM_RSA_PKCS_OAEP		= 0x00009,
@@ -1279,6 +1323,7 @@ enum pkcs11_mechanism_id {
 	PKCS11_CKM_AES_CBC			= 0x01082,
 	PKCS11_CKM_AES_CBC_PAD			= 0x01085,
 	PKCS11_CKM_AES_CTR			= 0x01086,
+	PKCS11_CKM_AES_GCM			= 0x01087,
 	PKCS11_CKM_AES_CTS			= 0x01089,
 	PKCS11_CKM_AES_CMAC			= 0x0108a,
 	PKCS11_CKM_AES_CMAC_GENERAL		= 0x0108b,

@@ -8,12 +8,13 @@ TA_SIGN_KEY ?= $(ta-dev-kit-dir$(sm))/keys/default_ta.pem
 ifeq ($(CFG_ENCRYPT_TA),y)
 # Default TA encryption key is a dummy key derived from default
 # hardware unique key (an array of 16 zero bytes) to demonstrate
-# usage of REE-FS TAs encryption feature.
+# usage of REE-FS TAs encryption feature. It should match the key
+# returned by tee_otp_get_ta_enc_key().
 #
 # Note that a user of this TA encryption feature needs to provide
 # encryption key and its handling corresponding to their security
 # requirements.
-TA_ENC_KEY ?= 'b64d239b1f3c7d3b06506229cd8ff7c8af2bb4db2168621ac62c84948468c4f4'
+TA_ENC_KEY ?= 'e3ff381eb7859bb961c52f9b78b693f725c261e75eb488ef5893d6de5d097e6a'
 endif
 
 all: $(link-out-dir$(sm))/$(user-ta-uuid).dmp \
@@ -37,17 +38,19 @@ endif
 link-ldflags += --as-needed # Do not add dependency on unused shlib
 link-ldflags += $(link-ldflags$(sm))
 
-$(link-out-dir$(sm))/dyn_list:
+$(link-out-dir$(sm))/dyn_list: FORCE
 	@$(cmd-echo-silent) '  GEN     $@'
 	$(q)mkdir -p $(dir $@)
-	$(q)echo "{" >$@
-	$(q)echo "__elf_phdr_info;" >>$@
+	$(q)echo "{" >$@.tmp
+	$(q)echo "__elf_phdr_info;" >>$@.tmp
 ifeq ($(CFG_FTRACE_SUPPORT),y)
-	$(q)echo "__ftrace_info;" >>$@
+	$(q)echo "__ftrace_info;" >>$@.tmp
 endif
-	$(q)echo "trace_ext_prefix;" >>$@
-	$(q)echo "trace_level;" >>$@
-	$(q)echo "};" >>$@
+	$(q)echo "trace_ext_prefix;" >>$@.tmp
+	$(q)echo "trace_level;" >>$@.tmp
+	$(q)echo "ta_head;" >>$@.tmp
+	$(q)echo "};" >>$@.tmp
+	$(q)$(call mv-if-changed,$@.tmp,$@)
 link-ldflags += --dynamic-list $(link-out-dir$(sm))/dyn_list
 dynlistdep = $(link-out-dir$(sm))/dyn_list
 cleanfiles += $(link-out-dir$(sm))/dyn_list
@@ -56,15 +59,21 @@ link-ldadd  = $(user-ta-ldadd) $(addprefix -L,$(libdirs))
 link-ldadd += --start-group
 link-ldadd += $(addprefix -l,$(libnames))
 ifneq (,$(filter %.cpp,$(srcs)))
+ifneq ($(CFG_TA_LIBGCC),y)
+$(error C++ code depends on CFG_TA_LIBGCC=y)
+endif
 link-ldflags += --eh-frame-hdr
 link-ldadd += $(libstdc++$(sm)) $(libgcc_eh$(sm))
 endif
 link-ldadd += --end-group
+ifeq ($(CFG_TA_LIBGCC),y)
+link-ldadd += $(libgcc$(sm))
+endif
 
 link-ldadd-after-libgcc += $(addprefix -l,$(libnames-after-libgcc))
 
 ldargs-$(user-ta-uuid).elf := $(link-ldflags) $(objs) $(link-ldadd) \
-				$(libgcc$(sm)) $(link-ldadd-after-libgcc)
+				$(link-ldadd-after-libgcc)
 
 link-script-cppflags-$(sm) := \
 	$(filter-out $(CPPFLAGS_REMOVE) $(cppflags-remove), \
@@ -80,7 +89,7 @@ define gen-link-t
 $(link-script-pp$(sm)): $(link-script$(sm)) $(conf-file) $(link-script-pp-makefiles$(sm))
 	@$(cmd-echo-silent) '  CPP     $$@'
 	$(q)mkdir -p $$(dir $$@)
-	$(q)$(CPP$(sm)) -P -MT $$@ -MD -MF $(link-script-dep$(sm)) \
+	$(q)$(CPP$(sm)) -P -MT $$@ -MD -MP -MF $(link-script-dep$(sm)) \
 		$(link-script-cppflags-$(sm)) $$< -o $$@
 
 $(link-out-dir$(sm))/$(user-ta-uuid).elf: $(objs) $(libdeps) \

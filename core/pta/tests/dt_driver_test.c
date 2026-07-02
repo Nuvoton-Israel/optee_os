@@ -15,7 +15,6 @@
 #include <drivers/rstctrl.h>
 #include <initcall.h>
 #include <kernel/dt_driver.h>
-#include <libfdt.h>
 #include <malloc.h>
 #include <sys/queue.h>
 #include <tee_api_defines_extensions.h>
@@ -283,7 +282,7 @@ static TEE_Result probe_test_gpios(const void *fdt, int node)
 	DT_TEST_MSG("Probe GPIO controllers");
 	dt_test_state.probe_gpios = IN_PROGRESS;
 
-	res = gpio_dt_get_by_index(fdt, node, 0, "test", &gpio);
+	res = gpio_dt_cfg_by_index(fdt, node, 0, "test", GPIO_IN, &gpio);
 	if (res)
 		goto err;
 
@@ -300,7 +299,7 @@ static TEE_Result probe_test_gpios(const void *fdt, int node)
 		goto err;
 	}
 
-	res = gpio_dt_get_by_index(fdt, node, 1, "test", &gpio);
+	res = gpio_dt_cfg_by_index(fdt, node, 1, "test", GPIO_IN, &gpio);
 	if (res)
 		goto err;
 

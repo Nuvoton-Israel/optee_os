@@ -3,11 +3,10 @@
  * Copyright (c) 2016-2021, Linaro Limited
  */
 
-#ifndef KERNEL_DT_H
-#define KERNEL_DT_H
+#ifndef __KERNEL_DT_H
+#define __KERNEL_DT_H
 
 #include <compiler.h>
-#include <kernel/interrupt.h>
 #include <kernel/panic.h>
 #include <scattered_array.h>
 #include <stdint.h>
@@ -87,6 +86,7 @@ struct dt_descriptor {
 
 extern uint8_t embedded_secure_dtb[];
 
+#ifdef CFG_DT
 /*
  * dt_getprop_as_number() - get a DT property a unsigned number
  * @fdt: DT base address
@@ -101,7 +101,6 @@ extern uint8_t embedded_secure_dtb[];
 int dt_getprop_as_number(const void *fdt, int nodeoffset, const char *name,
 			 uint64_t *num);
 
-#ifdef CFG_DT
 /*
  * Find a driver that is suitable for the given DT node, that is, with
  * a matching "compatible" property.
@@ -176,6 +175,17 @@ paddr_t fdt_reg_base_address(const void *fdt, int offs);
 size_t fdt_reg_size(const void *fdt, int offs);
 
 /*
+ * Read the base address and/or reg size for the "reg" property of the
+ * specified node.
+ * @fdt: Reference to the Device Tree
+ * @offs: Offset to the node to read "reg" property from
+ * @base: Pointer to the output base address value, or NULL
+ * @size: Pointer to the output size value, or NULL
+ * Returns 0 on success and a negative FDT error value in case of failure
+ */
+int fdt_reg_info(const void *fdt, int offs, paddr_t *base, size_t *size);
+
+/*
  * Read the status and secure-status properties into a bitfield.
  * Return -1 on failure, DT_STATUS_DISABLED if the node is disabled,
  * otherwise return a combination of DT_STATUS_OK_NSEC and DT_STATUS_OK_SEC.
@@ -238,7 +248,10 @@ int fdt_get_reg_props_by_index(const void *fdt, int node, int index,
 int fdt_get_reg_props_by_name(const void *fdt, int node, const char *name,
 			      paddr_t *base, size_t *size);
 
-/* Returns embedded DTB if present, then external DTB if found, then NULL */
+/*
+ * Returns embedded DTB if present, then external DTB if found,
+ * then manifest DTB if found, then NULL.
+ */
 void *get_dt(void);
 
 /*
@@ -248,7 +261,8 @@ void *get_dt(void);
  *
  * 1. Returns embedded DTB if available,
  * 2. Secure external DTB if available,
- * 3. If neither then NULL
+ * 3. Manifest DTB if available,
+ * 4. If neither then NULL
  */
 void *get_secure_dt(void);
 
@@ -267,13 +281,14 @@ struct dt_descriptor *get_external_dt_desc(void);
 /*
  * init_external_dt() - Initialize the external DTB located at given address.
  * @phys_dt:	Physical address where the external DTB located.
+ * @dt_sz:	Maximum size of the external DTB.
  *
  * Initialize the external DTB.
  *
  * 1. Add MMU mapping of the external DTB,
  * 2. Initialize device tree overlay
  */
-void init_external_dt(unsigned long phys_dt);
+void init_external_dt(unsigned long phys_dt, size_t dt_sz);
 
 /* Returns external DTB if present, otherwise NULL */
 void *get_external_dt(void);
@@ -291,6 +306,16 @@ int add_dt_path_subnode(struct dt_descriptor *dt, const char *path,
 			const char *subnode);
 
 /*
+ * add_dt_node_overlay_fragment() - Add an overlay node fragment for a node.
+ * @node:	Offset of the node where to add an overlay fragment
+ *
+ * Returns the offset into the __overlay__ child node which can be used
+ * by the caller to add properties on success or a negative libfdt
+ * error number.
+ */
+int add_dt_node_overlay_fragment(int node);
+
+/*
  * add_res_mem_dt_node() - Create "reserved-memory" parent and child nodes.
  * @dt:		Pointer to a device tree descriptor which has DTB.
  * @name:	Name of the child node.
@@ -301,6 +326,26 @@ int add_dt_path_subnode(struct dt_descriptor *dt, const char *path,
  */
 int add_res_mem_dt_node(struct dt_descriptor *dt, const char *name,
 			paddr_t pa, size_t size);
+
+/*
+ * init_manifest_dt() - Initialize the manifest DTB to given address.
+ * @fdt:	Physical address where the manifest DTB located.
+ * @max_size:	Maximum size of the DTB
+ *
+ * Initialize the manifest DTB to physical address
+ */
+void init_manifest_dt(void *fdt, size_t max_size);
+
+/*
+ * reinit_manifest_dt() - Reinitialize the manifest DTB
+ *
+ * Reserve used physical memory, add MMU mapping of the manifest DTB, and
+ * initialize device tree overlay
+ */
+void reinit_manifest_dt(void);
+
+/* Returns TOS_FW_CONFIG DTB or SP manifest DTB if present, otherwise NULL */
+void *get_manifest_dt(void);
 
 #else /* !CFG_DT */
 
@@ -328,6 +373,12 @@ static inline size_t fdt_reg_size(const void *fdt __unused,
 				  int offs __unused)
 {
 	return (size_t)-1;
+}
+
+static inline int fdt_reg_info(const void *fdt __unused, int offs __unused,
+			       paddr_t *base __unused, size_t *size __unused)
+{
+	return -1;
 }
 
 static inline int fdt_get_status(const void *fdt __unused, int offs __unused)
@@ -395,6 +446,14 @@ static inline int fdt_get_reg_props_by_name(const void *fdt __unused,
 	return -1;
 }
 
+static inline int dt_getprop_as_number(const void *fdt __unused,
+				       int nodeoffset __unused,
+				       const char *name __unused,
+				       uint64_t *num __unused)
+{
+	return -1;
+}
+
 static inline void *get_dt(void)
 {
 	return NULL;
@@ -420,7 +479,8 @@ static inline struct dt_descriptor *get_external_dt_desc(void)
 	return NULL;
 }
 
-static inline void init_external_dt(unsigned long phys_dt __unused)
+static inline void init_external_dt(unsigned long phys_dt __unused,
+				    size_t dt_sz __unused)
 {
 }
 
@@ -436,6 +496,11 @@ static inline int add_dt_path_subnode(struct dt_descriptor *dt __unused,
 	return -1;
 }
 
+static inline int add_dt_node_overlay_fragment(int node __unused)
+{
+	return -1;
+}
+
 static inline int add_res_mem_dt_node(struct dt_descriptor *dt __unused,
 				      const char *name __unused,
 				      paddr_t pa __unused,
@@ -444,5 +509,73 @@ static inline int add_res_mem_dt_node(struct dt_descriptor *dt __unused,
 	return -1;
 }
 
+static inline void init_manifest_dt(void *fdt __unused,
+				    size_t max_size __unused)
+{
+}
+
+static inline void reinit_manifest_dt(void)
+{
+}
+
+static inline void *get_manifest_dt(void)
+{
+	return NULL;
+}
+
 #endif /* !CFG_DT */
-#endif /* KERNEL_DT_H */
+
+#ifdef CFG_DT_CACHED_NODE_INFO
+/*
+ * Find the offset of a parent node in the parent node cache
+ * @fdt: FDT to work on
+ * @node_offset: Offset of the node we look for its parent
+ * @parent_offset: Output parent node offset upon success
+ * @return 0 on success and -1 on failure
+ */
+int fdt_find_cached_parent_node(const void *fdt, int node_offset,
+				int *parent_offset);
+
+/*
+ * Find the address/size cells value of a parent node in the parent node cache
+ * @fdt: FDT to work on
+ * @node_offset: Offset of the node we look for its parent
+ * @address_cells: Pointer to output #address-cells value upon success or NULL
+ * @size_cells: Pointer to output #size-cells value upon success or NULL
+ * @return 0 on success and -FDT_ERR_NOTFOUND on failure
+ */
+int fdt_find_cached_parent_reg_cells(const void *fdt, int node_offset,
+				     int *address_cells, int *size_cells);
+/*
+ * Find the node offset from its phandle in the phandle cache
+ * @fdt: FDT to work on
+ * @phandle: Node phandle
+ * @node_offset: Pointer to output node offset upon success
+ * @return 0 on success and -FDT_ERR_NOTFOUND on failure
+ */
+int fdt_find_cached_node_phandle(const void *fdt, uint32_t phandle,
+				 int *node_offset);
+#else
+static inline int fdt_find_cached_parent_node(const void *fdt __unused,
+					      int node_offset __unused,
+					      int *parent_offset __unused)
+{
+	return -1;
+}
+
+static inline int fdt_find_cached_parent_reg_cells(const void *fdt __unused,
+						   int node_offset __unused,
+						   int *address_cells __unused,
+						   int *size_cells __unused)
+{
+	return -1;
+}
+
+static inline int fdt_find_cached_node_phandle(const void *fdt __unused,
+					       uint32_t phandle __unused,
+					       int *node_offset __unused)
+{
+	return -1;
+}
+#endif /* CFG_DT_CACHED_NODE_INFO */
+#endif /* __KERNEL_DT_H */

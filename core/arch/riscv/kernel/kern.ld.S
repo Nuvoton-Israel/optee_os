@@ -116,6 +116,30 @@ SECTIONS
 		__rodata_end = .;
 	}
 
+	.dynsym : {
+		__dyn_sym_start = .;
+		*(.dynsym)
+		__dyn_sym_end = .;
+	}
+
+	.rel.dyn : {
+		*(.rel.*)
+	}
+
+	.rela.dyn : ALIGN(8) {
+		PROVIDE(__rel_dyn_start = .);
+		*(.rela*)
+		PROVIDE(__rel_dyn_end = .);
+	}
+
+#if defined(CFG_CORE_ASLR)
+	.data.rel.ro : {
+		. = ALIGN(8);
+		KEEP(*(SORT(.scattered_array*)));
+		*(.data.rel.ro.__unpaged .data.rel.ro.__unpaged.*)
+	}
+#endif
+
 	.got : { *(.got.plt) *(.got) }
 	.note.gnu.property : { *(.note.gnu.property) }
 	.plt : { *(.plt) }
@@ -152,12 +176,15 @@ SECTIONS
 		 * from __global_pointer$.
 		 */
 		PROVIDE(__global_pointer$ = . + 0x800 );
+		*(.sdata .sdata.* .gnu.linkonce.s.*)
 	}
 
 	/* uninitialized data */
 	.bss : {
 		__data_end = .;
 		__bss_start = .;
+		*(.sbss .sbss.*)
+		*(.gnu.linkonce.sb.*)
 		*(.bss .bss.*)
 		*(.gnu.linkonce.b.*)
 		*(COMMON)
@@ -191,6 +218,10 @@ SECTIONS
 		__nozi_stack_end = .;
 	}
 
+	. = ALIGN(SMALL_PAGE_SIZE);
+	__flatmap_free_start = .;
+	__flatmap_rw_size = __flatmap_free_start - __flatmap_rw_start;
+
 #ifdef CFG_CORE_SANITIZE_KADDRESS
 	. = TEE_RAM_START + (TEE_RAM_VA_SIZE * 8) / 9 - 8;
 	. = ALIGN(8);
@@ -215,33 +246,19 @@ SECTIONS
 
 	_end_of_ram = .;
 
-	__flatmap_rw_size = _end_of_ram - __flatmap_rw_start;
 	__get_tee_init_end = .;
+	__flatmap_free_size = _end_of_ram - __flatmap_free_start;
 
-	/*
-	 * These regions will not become a normal part of the dumped
-	 * binary, instead some are interpreted by the dump script and
-	 * converted into suitable format for OP-TEE itself to use.
-	 */
-	.dynamic : { *(.dynamic) }
-	.hash : { *(.hash) }
-	.dynsym : { *(.dynsym) }
-	.dynstr : { *(.dynstr) }
+	. = ALIGN(8);
 
-	.rel : {
-		*(.rel.*)
-	}
-	.rela : {
-		*(.rela.*)
-	}
 #ifndef CFG_CORE_ASLR
-	ASSERT(SIZEOF(.rel) == 0, "Relocation entries not expected")
-	ASSERT(SIZEOF(.rela) == 0, "Relocation entries not expected")
+	ASSERT(SIZEOF(.rel.dyn) == 0, "Relocation entries not expected")
+	ASSERT(SIZEOF(.rela.dyn) == 0, "Relocation entries not expected")
 #endif
 
 	/DISCARD/ : {
 		/* Strip unnecessary stuff */
-		*(.comment .note .eh_frame .interp)
+		*(.comment .note .eh_frame .interp .rela.plt)
 		/* Strip meta variables */
 		*(__keep_meta_vars*)
 	}
@@ -265,6 +282,10 @@ __vcore_unpg_ro_end = __vcore_unpg_ro_start + __vcore_unpg_ro_size;
 __vcore_unpg_rw_start = __flatmap_rw_start;
 __vcore_unpg_rw_size = __flatmap_rw_size;
 __vcore_unpg_rw_end = __vcore_unpg_rw_start + __vcore_unpg_rw_size;
+
+__vcore_free_start = __flatmap_free_start;
+__vcore_free_size = __flatmap_free_size;
+__vcore_free_end = __flatmap_free_start + __flatmap_free_size;
 
 #ifdef CFG_CORE_SANITIZE_KADDRESS
 __asan_map_start = (__asan_shadow_start / SMALL_PAGE_SIZE) *

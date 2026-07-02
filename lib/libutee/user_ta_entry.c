@@ -3,6 +3,7 @@
  * Copyright (c) 2014, STMicroelectronics International N.V.
  * Copyright (c) 2022, Linaro Limited.
  */
+#include <asan.h>
 #include <compiler.h>
 #include <link.h>
 #include <malloc.h>
@@ -27,8 +28,6 @@ struct ta_session {
 
 static TAILQ_HEAD(ta_sessions, ta_session) ta_sessions =
 		TAILQ_HEAD_INITIALIZER(ta_sessions);
-
-static bool init_done;
 
 /* From user_ta_header.c, built within TA */
 extern uint8_t ta_heap[];
@@ -167,6 +166,16 @@ static unsigned int get_memtag_implementation(void)
 
 static TEE_Result init_instance(void)
 {
+	static bool internal_init_done;
+	static bool init_done;
+	TEE_Result res;
+
+	if (init_done)
+		return TEE_SUCCESS;
+
+	if (internal_init_done)
+		goto create_entrypoint;
+
 	trace_set_level(tahead_get_trace_level());
 	__utee_gprof_init();
 	malloc_add_pool(ta_heap, ta_heap_size);
@@ -183,7 +192,16 @@ static TEE_Result init_instance(void)
 	_TEE_MathAPI_Init();
 	__utee_tcb_init();
 	__utee_call_elf_init_fn();
-	return TA_CreateEntryPoint();
+	asan_start();
+
+	internal_init_done = true;
+
+create_entrypoint:
+	res = TA_CreateEntryPoint();
+	if (!res)
+		init_done = true;
+
+	return res;
 }
 
 static void uninit_instance(void)
@@ -223,12 +241,9 @@ static TEE_Result ta_header_add_session(uint32_t session_id)
 	if (itr)
 		return TEE_SUCCESS;
 
-	if (!init_done) {
-		init_done = true;
-		res = init_instance();
-		if (res)
-			return res;
-	}
+	res = init_instance();
+	if (res)
+		return res;
 
 	itr = TEE_Malloc(sizeof(struct ta_session),
 			TEE_USER_MEM_HINT_NO_FILL_ZERO);
@@ -392,7 +407,7 @@ static TEE_Result entry_dump_memstats(unsigned long session_id __unused,
 {
 	uint32_t param_types = 0;
 	TEE_Param params[TEE_NUM_PARAMS] = { };
-	struct malloc_stats stats = { };
+	struct pta_stats_alloc stats = { };
 
 	from_utee_params(params, &param_types, up);
 	ta_header_save_params(param_types, params);

@@ -146,8 +146,7 @@ static ltc_mp_digit get_digit(void *a, int n)
 
 static int get_digit_count(void *a)
 {
-	return ROUNDUP(mbedtls_mpi_size(a), sizeof(mbedtls_mpi_uint)) /
-	       sizeof(mbedtls_mpi_uint);
+	return ROUNDUP_DIV(mbedtls_mpi_size(a), sizeof(mbedtls_mpi_uint));
 }
 
 static int compare(void *a, void *b)
@@ -602,9 +601,9 @@ static int rng_read(void *ignored __unused, unsigned char *buf, size_t blen)
 	return 0;
 }
 
-static int isprime(void *a, int b __unused, int *c)
+static int isprime(void *a, int b, int *c)
 {
-	int res = mbedtls_mpi_is_prime(a, rng_read, NULL);
+	int res = mbedtls_mpi_is_prime_ext(a, b, rng_read, NULL);
 
 	if (res == MBEDTLS_ERR_MPI_ALLOC_FAILED)
 		return CRYPT_MEM;

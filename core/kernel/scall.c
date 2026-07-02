@@ -8,8 +8,6 @@
 #include <kernel/abort.h>
 #include <kernel/arch_scall.h>
 #include <kernel/ldelf_syscalls.h>
-#include <kernel/misc.h>
-#include <kernel/panic.h>
 #include <kernel/scall.h>
 #include <kernel/tee_ta_manager.h>
 #include <kernel/thread.h>
@@ -19,7 +17,6 @@
 #include <ldelf.h>
 #include <mm/vm.h>
 #include <speculation_barrier.h>
-#include <string.h>
 #include <tee/svc_cache.h>
 #include <tee_syscall_numbers.h>
 #include <tee/tee_svc_cryp.h>
@@ -272,15 +269,11 @@ bool scall_handle_ldelf(struct thread_scall_regs *regs)
 
 	scf = get_ldelf_syscall_func(scn);
 
-	enter_user_access();
-
 	ftrace_syscall_enter(scn);
 
 	scall_set_retval(regs, scall_do_call(regs, scf));
 
 	ftrace_syscall_leave();
-
-	exit_user_access();
 
 	/*
 	 * Return true if we're to return to user mode,
