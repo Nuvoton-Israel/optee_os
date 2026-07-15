@@ -21,6 +21,8 @@ def get_args():
 
 def main():
     import array
+    import os
+    from cryptography.exceptions import UnsupportedAlgorithm
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
@@ -30,13 +32,56 @@ def main():
     with open(args.key, 'rb') as f:
         data = f.read()
 
+    # Resolve text link stubs (for example "Link: default.pem" produced when
+    # symlinks are checked out as regular files on some setups).
+    key_ref = None
+    for encoding in ('utf-8-sig', 'utf-16', 'utf-16-le'):
         try:
-            key = serialization.load_pem_private_key(data, password=None,
-                                                     backend=default_backend())
-            key = key.public_key()
-        except ValueError:
-            key = serialization.load_pem_public_key(data,
-                                                    backend=default_backend())
+            text = data.decode(encoding).strip()
+        except UnicodeDecodeError:
+            continue
+
+        if text.startswith('Link:'):
+            key_ref = text.split(':', 1)[1].strip()
+            break
+        if text and not any(c.isspace() for c in text) and \
+                not text.startswith('-----BEGIN'):
+            key_ref = text
+            break
+
+    if key_ref:
+        key_ref_path = os.path.join(os.path.dirname(args.key), key_ref)
+        if not os.path.isfile(key_ref_path):
+            raise ValueError("Key link target '{}' not found"
+                             .format(key_ref_path))
+        with open(key_ref_path, 'rb') as f:
+            data = f.read()
+
+    errors = []
+    key = None
+    loaders = (
+        lambda d: serialization.load_pem_private_key(
+            d, password=None, backend=default_backend()).public_key(),
+        lambda d: serialization.load_pem_public_key(
+            d, backend=default_backend()),
+        lambda d: serialization.load_ssh_private_key(
+            d, password=None, backend=default_backend()).public_key(),
+        lambda d: serialization.load_ssh_public_key(
+            d, backend=default_backend()),
+    )
+    for load_key in loaders:
+        try:
+            key = load_key(data)
+            break
+        except (ValueError, TypeError, UnsupportedAlgorithm) as ex:
+            errors.append(ex)
+
+    if key is None:
+        raise ValueError(
+            "Could not load key '{}' as PEM/OpenSSH public or private key"
+            .format(args.key)) from errors[-1]
+    if not isinstance(key, rsa.RSAPublicKey):
+        raise ValueError("Key '{}' is not an RSA key".format(args.key))
 
     # Refuse public exponent with more than 32 bits. Otherwise the C
     # compiler may simply truncate the value and proceed.

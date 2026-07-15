@@ -6,6 +6,7 @@
 
 import sys
 import math
+import os
 
 
 sig_tee_alg = {'TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256': 0x70414930,
@@ -245,7 +246,7 @@ def get_args():
     arg_add_dig(parser_digest)
 
     parser_stitch = subparsers.add_parser(
-        'stitch', aliases=['stitch-ta'], prog=parser.prog + ' stich',
+        'stitch', aliases=['stitch-ta'], prog=parser.prog + ' stitch',
         help='Generate loadable signed and encrypted TA binary image file' +
         ' from TA raw image and its signature')
     parser_stitch.set_defaults(func=command_stitch)
@@ -266,6 +267,7 @@ def get_args():
     arg_add_uuid(parser_verify)
     arg_add_in(parser_verify)
     arg_add_key(parser_verify)
+    arg_add_enc_key(parser_verify)
 
     parser_display = subparsers.add_parser(
         'display', prog=parser.prog + ' display',
@@ -329,13 +331,44 @@ def load_asymmetric_key_img(data):
         return load_pem_public_key(data, backend=default_backend())
 
 
+def load_key_file_data(path):
+    with open(path, 'rb') as f:
+        data = f.read()
+
+    # Resolve text link stubs (for example "Link: default.pem" produced when
+    # symlinks are checked out as regular files on some setups).
+    for encoding in ('utf-8-sig', 'utf-16', 'utf-16-le'):
+        try:
+            text = data.decode(encoding).strip()
+        except UnicodeDecodeError:
+            continue
+
+        if text.startswith('Link:'):
+            key_ref = text.split(':', 1)[1].strip()
+        elif text and not any(c.isspace() for c in text) and \
+                not text.startswith('-----BEGIN'):
+            key_ref = text
+        else:
+            key_ref = None
+
+        if key_ref:
+            key_ref_path = os.path.join(os.path.dirname(path), key_ref)
+            if not os.path.isfile(key_ref_path):
+                raise ValueError("Key link target '{}' not found"
+                                 .format(key_ref_path))
+            with open(key_ref_path, 'rb') as key_f:
+                return key_f.read()
+            break
+
+    return data
+
+
 def load_asymmetric_key(arg_key):
     if arg_key.startswith('arn:'):
         from sign_helper_kms import _RSAPrivateKeyInKMS
         return _RSAPrivateKeyInKMS(arg_key)
     else:
-        with open(arg_key, 'rb') as f:
-            return load_asymmetric_key_img(f.read())
+        return load_asymmetric_key_img(load_key_file_data(arg_key))
 
 
 class BinaryImage:
@@ -505,9 +538,9 @@ class BinaryImage:
                 offs += EHDR_SIZE
                 [enc_algo, flags, nonce_len,
                  tag_len] = struct.unpack('<IIHH', self.ehdr)
-                if enc_value not in enc_tee_alg.values():
+                if enc_algo not in enc_tee_alg.values():
                     raise Exception('Unrecognized encrypt algorithm: 0x{:08x}'
-                                    .format(enc_value))
+                                    .format(enc_algo))
                 if nonce_len != 12:
                     raise Exception("Unexpected nonce len: {}"
                                     .format(nonce_len))
@@ -516,8 +549,10 @@ class BinaryImage:
 
                 if tag_len != 16:
                     raise Exception("Unexpected tag len: {}".format(tag_len))
-                self.tag = self.inf[-tag_len:]
-                self.ciphertext = self.inf[offs:-tag_len]
+                self.tag = self.inf[offs:offs + tag_len]
+                offs += tag_len
+
+                self.ciphertext = self.inf[offs:]
                 if len(self.ciphertext) != img_size:
                     raise Exception("Unexpected ciphertext size: ",
                                     "got {}, expected {}"
@@ -590,7 +625,7 @@ class BinaryImage:
                  tag_len] = struct.unpack('<IIHH', ehdr)
 
                 print(' struct shdr_encrypted_ta')
-                enc_algo_name = 'Unkown'
+                enc_algo_name = 'Unknown'
                 if enc_algo in enc_tee_alg.values():
                     enc_algo_name = value_to_key(enc_tee_alg, enc_algo)
                 print('  enc_algo:   0x{:08x} ({})'
@@ -598,9 +633,9 @@ class BinaryImage:
 
                 if enc_algo not in enc_tee_alg.values():
                     raise Exception('Unrecognized encrypt algorithm: 0x{:08x}'
-                                    .format(enc_value))
+                                    .format(enc_algo))
 
-                flags_name = 'Unkown'
+                flags_name = 'Unknown'
                 if flags in enc_key_type.values():
                     flags_name = value_to_key(enc_key_type, flags)
                 print('  flags:      0x{:x} ({})'.format(flags, flags_name))
@@ -617,10 +652,12 @@ class BinaryImage:
                 print('  tag_size:   {} (bytes)'.format(tag_len))
                 if tag_len != TAG_SIZE:
                     raise Exception("Unexpected tag len: {}".format(tag_len))
-                tag = self.inf[-tag_len:]
+                tag = self.inf[offs:offs+tag_len]
                 print('  tag:        {}'
                       .format(binascii.hexlify(tag).decode('ascii')))
-                ciphertext = self.inf[offs:-tag_len]
+                offs += tag_len
+
+                ciphertext = self.inf[offs:]
                 print(' TA offset:  {} (0x{:x}) bytes'.format(offs, offs))
                 print(' TA size:    {} (0x{:x}) bytes'
                       .format(len(ciphertext), len(ciphertext)))
@@ -628,7 +665,6 @@ class BinaryImage:
                     raise Exception("Unexpected ciphertext size: ",
                                     "got {}, expected {}"
                                     .format(len(ciphertext), img_size))
-                offs += tag_len
             else:
                 img = self.inf[offs:]
                 print(' TA offset:  {} (0x{:x}) bytes'.format(offs, offs))
@@ -717,11 +753,11 @@ class BinaryImage:
             else:
                 raise Exception("Unsupported image type: {}".format(img_type))
 
-    def decrypt_ta(enc_key):
+    def decrypt_ta(self, enc_key):
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         cipher = AESGCM(bytes.fromhex(enc_key))
-        self.img = cipher.decrypt(self.nonce, self.ciphertext, None)
+        self.img = cipher.decrypt(self.nonce, self.ciphertext + self.tag, None)
 
     def __get_padding(self):
         from cryptography.hazmat.primitives.asymmetric import padding
@@ -911,7 +947,7 @@ def command_verify(args):
                                             next_uuid))
             if hasattr(image, 'ciphertext'):
                 if args.enc_key is None:
-                    logger.error('--enc_key needed to decrypt TA')
+                    logger.error('--enc-key needed to decrypt TA')
                     sys.exit(1)
                 image.decrypt_ta(args.enc_key)
             image.verify_signature()
