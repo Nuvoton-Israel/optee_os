@@ -35,6 +35,7 @@ CFG_TEE_SDP_MEM_BASE ?= 0x05F00000
 CFG_TEE_SDP_MEM_SIZE ?= 0x00100000
 $(call force,CFG_DT,y)
 CFG_DTB_MAX_SIZE ?= 0x100000
+CFG_CORE_TA_STACK_SIZE = 8192
 $(call force,CFG_WITH_PAGER,n,Pager is not supported for NPCM845x)
 else
 $(error Unsupported platform flavor "$(PLATFORM_FLAVOR)")
